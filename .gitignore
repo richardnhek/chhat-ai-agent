@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.xlsx
+!sample_input.xlsx
+.DS_Store
+KH Census_Brand Book*
+CHHAT_TC*
+demo_input*
+*.output
