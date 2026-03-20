@@ -22,6 +22,7 @@ from PIL import Image as PILImage
 
 from image_analyzer import fetch_image, analyze_image, _resize_image, get_available_models
 from brands import format_q12a, BRANDS_AND_SKUS
+from corrections import find_relevant_corrections, format_corrections_for_prompt, get_correction_stats
 
 
 def parse_args():
@@ -217,6 +218,16 @@ def main():
                 print(f"    {u[:80]}...")
         sys.exit(0)
 
+    # Load past corrections for few-shot learning
+    stats = get_correction_stats()
+    if stats["total"] > 0:
+        print(f"  Corrections loaded: {stats['total']} past corrections")
+        recent_corrections = find_relevant_corrections(limit=5)
+        correction_context = format_corrections_for_prompt(recent_corrections)
+    else:
+        print(f"  Corrections: none yet (first run)")
+        correction_context = ""
+
     print(f"\n{'─'*60}")
     print(f"  Processing {len(rows)} outlets...\n")
 
@@ -241,7 +252,7 @@ def main():
                 thumbnails.append(create_thumbnail(image_data))
 
                 # Analyze
-                analysis = analyze_image(image_data, media_type, model=args.model, api_keys=api_keys)
+                analysis = analyze_image(image_data, media_type, model=args.model, api_keys=api_keys, correction_context=correction_context)
 
                 if "error" not in analysis:
                     for brand_entry in analysis.get("brands_found", []):

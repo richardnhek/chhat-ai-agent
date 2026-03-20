@@ -230,19 +230,19 @@ def _parse_response(response_text: str) -> dict:
 
 # ── Claude (Anthropic) ──────────────────────────────────────────────────────
 
-def _analyze_claude(image_data: bytes, media_type: str, model: str, api_key: str) -> dict:
+def _analyze_claude(image_data: bytes, media_type: str, model: str, api_key: str, prompt: str = "") -> dict:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     b64_image = base64.b64encode(image_data).decode("utf-8")
 
     message = client.messages.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=2048,
         messages=[{
             "role": "user",
             "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_image}},
-                {"type": "text", "text": ANALYSIS_PROMPT},
+                {"type": "text", "text": prompt or ANALYSIS_PROMPT},
             ],
         }],
     )
@@ -251,7 +251,7 @@ def _analyze_claude(image_data: bytes, media_type: str, model: str, api_key: str
 
 # ── Gemini (Google) ──────────────────────────────────────────────────────────
 
-def _analyze_gemini(image_data: bytes, media_type: str, model: str, api_key: str) -> dict:
+def _analyze_gemini(image_data: bytes, media_type: str, model: str, api_key: str, prompt: str = "") -> dict:
     from google import genai
     from google.genai import types
 
@@ -261,7 +261,7 @@ def _analyze_gemini(image_data: bytes, media_type: str, model: str, api_key: str
         model=model,
         contents=[
             types.Part.from_bytes(data=image_data, mime_type=media_type),
-            ANALYSIS_PROMPT,
+            prompt or ANALYSIS_PROMPT,
         ],
         config=types.GenerateContentConfig(
             max_output_tokens=4096,
@@ -273,7 +273,7 @@ def _analyze_gemini(image_data: bytes, media_type: str, model: str, api_key: str
 
 # ── Qwen2.5-VL via Fireworks AI (OpenAI-compatible) ─────────────────────────
 
-def _analyze_fireworks(image_data: bytes, media_type: str, model: str, api_key: str) -> dict:
+def _analyze_fireworks(image_data: bytes, media_type: str, model: str, api_key: str, prompt: str = "") -> dict:
     from openai import OpenAI
 
     client = OpenAI(
@@ -286,13 +286,13 @@ def _analyze_fireworks(image_data: bytes, media_type: str, model: str, api_key: 
 
     response = client.chat.completions.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=2048,
         temperature=0.1,
         messages=[{
             "role": "user",
             "content": [
                 {"type": "image_url", "image_url": {"url": data_uri}},
-                {"type": "text", "text": ANALYSIS_PROMPT},
+                {"type": "text", "text": prompt or ANALYSIS_PROMPT},
             ],
         }],
     )
@@ -313,6 +313,7 @@ def analyze_image(
     media_type: str,
     model: str = "claude-sonnet-4-6",
     api_keys: dict[str, str] | None = None,
+    correction_context: str = "",
     # Legacy support: accept a client object and ignore it
     client=None,
 ) -> dict:
@@ -323,7 +324,8 @@ def analyze_image(
         image_data: Raw image bytes
         media_type: MIME type
         model: Model name from MODEL_REGISTRY or a raw model ID
-        api_keys: Dict of provider -> API key, e.g. {"claude": "sk-...", "gemini": "AIza..."}
+        api_keys: Dict of provider -> API key
+        correction_context: Past corrections formatted as few-shot examples
         client: (Legacy) Ignored, kept for backward compatibility
     """
     # Resolve provider and model ID
@@ -347,13 +349,18 @@ def analyze_image(
         if not api_key:
             return {"error": f"No API key for provider '{provider}'. Set {key_env_map.get(provider, 'UNKNOWN')} in .env"}
 
+    # Build prompt with correction context
+    prompt = ANALYSIS_PROMPT
+    if correction_context:
+        prompt = prompt + "\n\n" + correction_context
+
     # Call provider
     fn = _PROVIDER_FNS.get(provider)
     if not fn:
         return {"error": f"Unknown provider: {provider}"}
 
     try:
-        return fn(image_data, media_type, model_id, api_key)
+        return fn(image_data, media_type, model_id, api_key, prompt=prompt)
     except Exception as e:
         return {"error": f"{provider} API error: {e}"}
 
