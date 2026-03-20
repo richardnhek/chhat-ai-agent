@@ -29,39 +29,62 @@ MAX_IMAGE_SIZE = 3_500_000
 
 _BRAND_LIST = get_brand_list_for_prompt()
 
-ANALYSIS_PROMPT = f"""You are an expert tobacco product auditor for the Cambodian market. You analyze real-world photos of store display cases to identify which cigarette BRANDS are physically present as actual cigarette boxes/packs.
+ANALYSIS_PROMPT = f"""You are an expert tobacco product auditor for the Cambodian market. You analyze real-world photos of store display cases to identify which cigarette BRANDS and SKUs are physically present.
 
-IMPORTANT RULES:
+RULES FOR BRAND IDENTIFICATION:
 - ONLY identify brands where you can see an actual physical cigarette BOX or PACK.
 - Do NOT count brand names printed on shelf labels, price tags, signs, posters, or advertisements — only actual product boxes.
 - Glass reflections, glare, and dirty glass are common — do not let reflections trick you into identifying brands that aren't physically there.
 - Some packs may be upside-down or sideways — still count them if you can identify the brand.
 - Ignore all non-cigarette products (lighters, candy, razors, drinks, etc.)
 
-Here is the OFFICIAL brand list. You MUST match brands to this list. Use EXACTLY these brand names:
-{_BRAND_LIST}
+RULES FOR SKU IDENTIFICATION — THIS IS CRITICAL:
+- For EACH brand you identify, you MUST determine the specific SKU variant. Do NOT just say the brand name — identify the exact SKU.
+- SKU clues: pack COLOR (red, blue, gold, green, black, purple), text on the pack (e.g. "MENTHOL", "LIGHTS", "CHANGE", "ORIGINAL"), pack SIZE (slim, compact, king size, hard pack), and any capsule/option indicators.
+- Common SKU patterns in Cambodia:
+  - Red pack = usually "RED" or "HARD PACK" or "FF" (full flavor)
+  - Blue pack = usually "LIGHTS" or "BLUE" or "MENTHOL"
+  - Gold pack = usually "GOLD"
+  - Green pack = usually "MENTHOL"
+  - Black/dark pack = usually "ORIGINAL" or premium variant
+  - Slim/thin pack = "SLIMS" or "SUPER SLIMS"
+- If you can see the pack but cannot determine the exact SKU, use the brand name + "OTHERS" (e.g. "ESSE OTHERS")
 
-For each brand you identify, also try to identify the specific SKU variant if possible (e.g. "ARA RED" vs just "ARA").
+RULES FOR BLURRY / PARTIALLY VISIBLE BOXES:
+- If you see shapes that look like cigarette boxes but are TOO BLURRY to identify the brand, report them in "unidentified_packs".
+- If you can partially identify a blurry box (e.g. you can tell it's red but can't read the text), note it as your best guess with low confidence.
+- The presence of blurry/unidentifiable boxes should LOWER your overall confidence level.
+- Do NOT simply ignore boxes you can't read — acknowledge them.
+
+CONFIDENCE RULES:
+- "high" = all boxes are clearly visible, text is readable, you are very sure of all identifications
+- "medium" = most boxes are clear but some are partially obscured, angled, or behind dirty glass
+- "low" = significant portion of boxes are blurry, obscured, or hard to identify; there are unidentified packs
+
+Here is the OFFICIAL brand and SKU list. Match brands and SKUs EXACTLY to this list:
+{_BRAND_LIST}
 
 Respond in this EXACT JSON format (no markdown, just raw JSON):
 {{
     "brands_found": [
-        {{"brand": "<EXACT brand name from list>", "skus": ["<SKU1>", "<SKU2>"], "notes": "<brief description of what you see>"}},
+        {{"brand": "<EXACT brand name from list>", "skus": ["<EXACT SKU name from list>"], "notes": "<describe what you see: pack color, text, position>"}},
     ],
     "brand_count": <number of distinct brands found>,
+    "unidentified_packs": <number of cigarette-shaped boxes you can see but cannot identify>,
     "confidence": "<high|medium|low>",
-    "notes": "<any visibility issues or observations>"
+    "notes": "<visibility issues, blurry areas, anything that affected your analysis>"
 }}
 
 If NO cigarette boxes are visible, respond with:
 {{
     "brands_found": [],
     "brand_count": 0,
+    "unidentified_packs": 0,
     "confidence": "high",
     "notes": "<what the image shows>"
 }}
 
-Be methodical: scan left-to-right, top-to-bottom. Only report brands with physical boxes present.
+Be methodical: scan left-to-right, top-to-bottom. Report ALL cigarette boxes you see, even blurry ones.
 """
 
 # ── Provider registry ────────────────────────────────────────────────────────
@@ -73,9 +96,11 @@ MODEL_REGISTRY = {
     "claude-haiku-4-5": ("claude", "claude-haiku-4-5-20251001"),
     "claude-opus-4-6": ("claude", "claude-opus-4-6"),
     # Gemini models
+    "gemini-3.1-pro": ("gemini", "gemini-3.1-pro-preview"),
+    "gemini-3-pro": ("gemini", "gemini-3-pro-preview"),
+    "gemini-3-flash": ("gemini", "gemini-3-flash-preview"),
     "gemini-2.5-flash": ("gemini", "gemini-2.5-flash"),
     "gemini-2.5-pro": ("gemini", "gemini-2.5-pro"),
-    "gemini-2.0-flash": ("gemini", "gemini-2.0-flash-001"),
     # Open-source via Fireworks AI
     "qwen2.5-vl-72b": ("fireworks", "accounts/fireworks/models/qwen2p5-vl-72b-instruct"),
     "qwen2.5-vl-7b": ("fireworks", "accounts/fireworks/models/qwen2p5-vl-7b-instruct"),

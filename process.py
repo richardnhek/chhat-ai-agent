@@ -91,7 +91,9 @@ def build_output(results: list[dict], output_path: str):
         ("E", "Q12A - Brands", 50),
         ("F", "Q12B - SKUs", 60),
         ("G", "Brand Count", 14),
-        ("H", "Status", 12),
+        ("H", "Unidentified Packs", 18),
+        ("I", "Confidence", 14),
+        ("J", "Status", 12),
     ]
 
     header_font = Font(bold=True, color="FFFFFF", size=11)
@@ -144,12 +146,30 @@ def build_output(results: list[dict], output_path: str):
         ws.cell(row=row, column=7).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row=row, column=7).font = Font(bold=True, size=14)
 
+        # Unidentified packs
+        unidentified = result.get("unidentified_packs", 0)
+        cell_unid = ws.cell(row=row, column=8, value=unidentified)
+        cell_unid.alignment = Alignment(horizontal="center", vertical="center")
+        if unidentified and unidentified > 0:
+            cell_unid.font = Font(color="FF8C00", bold=True)
+
+        # Confidence
+        confidence = result.get("confidence", "")
+        cell_conf = ws.cell(row=row, column=9, value=confidence)
+        cell_conf.alignment = Alignment(horizontal="center", vertical="center")
+        if confidence == "high":
+            cell_conf.font = Font(color="00B050", bold=True)
+        elif confidence == "medium":
+            cell_conf.font = Font(color="FF8C00", bold=True)
+        elif confidence == "low":
+            cell_conf.font = Font(color="FF0000", bold=True)
+
         # Status
         if result.get("error"):
-            status_cell = ws.cell(row=row, column=8, value="ERROR")
+            status_cell = ws.cell(row=row, column=10, value="ERROR")
             status_cell.font = Font(color="FF0000", bold=True)
         else:
-            status_cell = ws.cell(row=row, column=8, value="OK")
+            status_cell = ws.cell(row=row, column=10, value="OK")
             status_cell.font = Font(color="00B050", bold=True)
         status_cell.alignment = Alignment(horizontal="center", vertical="center")
 
@@ -210,7 +230,10 @@ def main():
         all_brands = set()
         all_skus = set()
         thumbnails = []
+        total_unidentified = 0
+        worst_confidence = "high"
         error = None
+        confidence_rank = {"low": 0, "medium": 1, "high": 2}
 
         for url_idx, url in enumerate(urls):
             try:
@@ -228,6 +251,10 @@ def main():
                         for sku in brand_entry.get("skus", []):
                             if sku:
                                 all_skus.add(sku)
+                    total_unidentified += analysis.get("unidentified_packs", 0)
+                    img_conf = analysis.get("confidence", "medium")
+                    if confidence_rank.get(img_conf, 1) < confidence_rank.get(worst_confidence, 2):
+                        worst_confidence = img_conf
                 else:
                     error = analysis["error"]
 
@@ -241,13 +268,16 @@ def main():
         brands_sorted = sorted(all_brands)
         skus_sorted = sorted(all_skus)
 
-        print(f"           Brands: {', '.join(brands_sorted) if brands_sorted else 'None'} ({len(brands_sorted)})")
+        unid_str = f" | Unidentified: {total_unidentified}" if total_unidentified else ""
+        print(f"           Brands: {', '.join(brands_sorted) if brands_sorted else 'None'} ({len(brands_sorted)}) | Confidence: {worst_confidence}{unid_str}")
 
         results.append({
             "serial": serial,
             "brands": brands_sorted,
             "skus": skus_sorted,
             "thumbnails": thumbnails,
+            "unidentified_packs": total_unidentified,
+            "confidence": worst_confidence,
             "error": error if not brands_sorted and error else None,
         })
 
