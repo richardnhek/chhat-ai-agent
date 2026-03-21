@@ -81,12 +81,11 @@ st.markdown("---")
 st.markdown("### All Jobs")
 
 jobs = get_all_jobs()
+has_running = any(j["status"] == "running" for j in jobs) if jobs else False
 
 if not jobs:
     st.info("No jobs yet. Submit one above.")
 else:
-    # Refresh button for running jobs
-    has_running = any(j["status"] == "running" for j in jobs)
     if has_running:
         if st.button("Refresh Progress", use_container_width=True):
             st.rerun()
@@ -163,7 +162,8 @@ else:
                 delete_job(job_id)
                 st.rerun()
 
-# Auto-refresh if jobs are running
+# Auto-refresh if jobs are running (every 5 seconds)
 if has_running:
-    time.sleep(3)
+    st.info("Jobs are running. Page will auto-refresh every 5 seconds.")
+    time.sleep(5)
     st.rerun()
