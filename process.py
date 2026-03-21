@@ -267,6 +267,56 @@ def build_output(results: list[dict], output_path: str):
     return output_path
 
 
+def build_client_format(results: list[dict], output_path: str):
+    """
+    Build output in the client's Result Format (Sheet 3 format):
+    Row 5: Respondent.Serial | Q12A | Q12B
+    Row 6: Serial number | PLEASE SELECT THE BRAND... | PLEASE SELECT THE SKU...
+    Row 7+: data
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Result format "
+
+    header_font = Font(bold=True, size=11)
+
+    # Row 5: field codes
+    ws.cell(row=5, column=1, value="Respondent.Serial").font = header_font
+    ws.cell(row=5, column=2, value="Q12A").font = header_font
+    ws.cell(row=5, column=3, value="Q12B").font = header_font
+
+    # Row 6: descriptions
+    ws.cell(row=6, column=1, value="Serial number").font = header_font
+    ws.cell(row=6, column=2, value="PLEASE SELECT THE BRAND OF TOBACCO SELLING IN THE OUTLET").font = header_font
+    ws.cell(row=6, column=3, value="PLEASE SELECT THE SKU AVAILABLE IN THE OUTLET").font = header_font
+
+    # Column widths
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 80
+    ws.column_dimensions["C"].width = 80
+
+    # Data rows
+    for i, result in enumerate(results):
+        row = i + 7
+        ws.cell(row=row, column=1, value=result["serial"])
+
+        brands = result.get("brands", [])
+        skus = result.get("skus", [])
+
+        # Q12A format: BRAND_Khmer | BRAND_Khmer
+        q12a = format_q12a(brands)
+        ws.cell(row=row, column=2, value=q12a)
+        ws.cell(row=row, column=2).alignment = Alignment(wrap_text=True)
+
+        # Q12B format: SKU1 | SKU2
+        q12b = " | ".join(skus) if skus else ""
+        ws.cell(row=row, column=3, value=q12b)
+        ws.cell(row=row, column=3).alignment = Alignment(wrap_text=True)
+
+    wb.save(output_path)
+    return output_path
+
+
 def main():
     load_dotenv()
     args = parse_args()

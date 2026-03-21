@@ -408,21 +408,48 @@ if uploaded_file is not None:
         # ── Download ─────────────────────────────────────────────────────
 
         st.markdown("---")
-        output_buffer = io.BytesIO()
-        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as out_tmp:
-            build_output(st.session_state["results"], out_tmp.name)
-            with open(out_tmp.name, "rb") as f:
-                output_buffer.write(f.read())
-            os.unlink(out_tmp.name)
+        st.markdown("### Download Results")
 
-        st.download_button(
-            label="Download Results Excel (with embedded images)",
-            data=output_buffer.getvalue(),
-            file_name=Path(uploaded_file.name).stem + "_results.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True,
+        export_format = st.radio(
+            "Choose export format:",
+            ["Detailed Report (with images, confidence, unidentified packs)", "Client Format (Q12A + Q12B only)"],
+            horizontal=True,
         )
+
+        results_data = st.session_state["results"]
+        stem = Path(uploaded_file.name).stem
+
+        if export_format.startswith("Detailed"):
+            output_buffer = io.BytesIO()
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as out_tmp:
+                build_output(results_data, out_tmp.name)
+                with open(out_tmp.name, "rb") as f:
+                    output_buffer.write(f.read())
+                os.unlink(out_tmp.name)
+            st.download_button(
+                label="Download Detailed Report",
+                data=output_buffer.getvalue(),
+                file_name=f"{stem}_detailed.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+            )
+        else:
+            from process import build_client_format
+            output_buffer = io.BytesIO()
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as out_tmp:
+                build_client_format(results_data, out_tmp.name)
+                with open(out_tmp.name, "rb") as f:
+                    output_buffer.write(f.read())
+                os.unlink(out_tmp.name)
+            st.download_button(
+                label="Download Client Format (Q12A + Q12B)",
+                data=output_buffer.getvalue(),
+                file_name=f"{stem}_Q12AB.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+            )
 
     try:
         os.unlink(tmp_path)
