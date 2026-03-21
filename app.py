@@ -52,6 +52,52 @@ st.markdown("""
     .correction-removed { color: #dc3545; font-weight: 600; text-decoration: line-through; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+
+    /* Mobile responsive — tablet */
+    @media (max-width: 768px) {
+        .main-header { font-size: 1.5rem; }
+        .sub-header { font-size: 0.95rem; margin-bottom: 1rem; }
+        .metric-value { font-size: 1.2rem; }
+        .brand-tag { font-size: 0.7rem; padding: 0.15rem 0.5rem; }
+        .sku-tag { font-size: 0.7rem; padding: 0.15rem 0.4rem; }
+        .result-card { padding: 0.8rem; }
+        .result-card > div[style*="display:flex"] {
+            flex-direction: column !important;
+            gap: 0.5rem !important;
+        }
+        /* Confidence guide compact */
+        [data-testid="stSidebar"] div[style*="font-size:0.85rem"] {
+            font-size: 0.75rem !important;
+            line-height: 1.4 !important;
+        }
+        /* Stack image columns */
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+        }
+        [data-testid="stHorizontalBlock"] > div {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+    }
+
+    /* Mobile responsive — phone */
+    @media (max-width: 480px) {
+        .main-header { font-size: 1.2rem; }
+        .sub-header { font-size: 0.85rem; }
+        .metric-value { font-size: 1rem; }
+        .brand-tag { font-size: 0.65rem; padding: 0.1rem 0.4rem; }
+        .sku-tag { font-size: 0.65rem; padding: 0.1rem 0.3rem; }
+        .result-card { padding: 0.6rem; margin-bottom: 0.5rem; }
+        /* Full-width multiselect and download buttons */
+        [data-testid="stMultiSelect"],
+        [data-testid="stDownloadButton"],
+        [data-testid="stDownloadButton"] > button {
+            width: 100% !important;
+        }
+        [data-testid="stDownloadButton"] > button {
+            min-width: 100% !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 

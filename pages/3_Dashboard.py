@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from stats import get_accuracy_stats, get_confusion_matrix, get_processing_stats, export_corrections_csv
 from corrections import get_correction_stats
+from cost_tracker import get_total_cost
 
 load_dotenv()
 
@@ -19,6 +20,33 @@ st.markdown("""
     .confusion-row { padding: 0.4rem; border-bottom: 1px solid #eee; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+
+    /* Mobile responsive — tablet */
+    @media (max-width: 768px) {
+        .brand-tag { font-size: 0.7rem; padding: 0.15rem 0.5rem; }
+        .stat-card { padding: 1rem; }
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+        }
+        [data-testid="stHorizontalBlock"] > div {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+    }
+
+    /* Mobile responsive — phone */
+    @media (max-width: 480px) {
+        .brand-tag { font-size: 0.65rem; padding: 0.1rem 0.4rem; }
+        .stat-card { padding: 0.6rem; }
+        [data-testid="stMultiSelect"],
+        [data-testid="stDownloadButton"],
+        [data-testid="stDownloadButton"] > button {
+            width: 100% !important;
+        }
+        [data-testid="stDownloadButton"] > button {
+            min-width: 100% !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -29,12 +57,15 @@ st.markdown("## Dashboard & Analytics")
 st.markdown("### Processing Overview")
 proc_stats = get_processing_stats()
 
-c1, c2, c3, c4, c5 = st.columns(5)
+cost_stats = get_total_cost()
+
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Total Jobs", proc_stats.get("total_jobs", 0))
 c2.metric("Completed", proc_stats.get("completed_jobs", 0))
 c3.metric("Outlets Processed", proc_stats.get("total_outlets_processed", 0))
 c4.metric("Images Processed", proc_stats.get("total_images_processed", 0))
 c5.metric("Error Rate", f"{proc_stats.get('error_rate', 0)}%")
+c6.metric("Total API Cost", f"${cost_stats['total_cost']:.2f}" if cost_stats["total_calls"] > 0 else "—")
 
 brands_found = proc_stats.get("unique_brands_found", [])
 if brands_found:
@@ -44,6 +75,12 @@ if brands_found:
 models_used = proc_stats.get("models_used", {})
 if models_used:
     st.caption(f"Models used: {', '.join(f'{m} ({c}x)' for m, c in models_used.items())}")
+
+if cost_stats["total_calls"] > 0:
+    by_model = cost_stats.get("by_model", {})
+    if by_model:
+        cost_parts = [f"{m}: ${c:.3f}" for m, c in sorted(by_model.items(), key=lambda x: -x[1])]
+        st.caption(f"Cost by model: {' | '.join(cost_parts)} | Total API calls: {cost_stats['total_calls']}")
 
 if proc_stats.get("avg_processing_time_seconds"):
     st.caption(f"Average job processing time: {proc_stats['avg_processing_time_seconds']:.0f}s")

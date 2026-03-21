@@ -12,10 +12,11 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
-from jobs import get_all_jobs, get_job, get_job_progress, create_job, run_job, delete_job
+from jobs import get_all_jobs, get_job, get_job_progress, create_job, run_job, delete_job, resume_job
 from image_analyzer import get_available_models
 from process import read_raw_data
 from corrections import get_correction_stats
+from cost_tracker import get_job_cost
 
 load_dotenv()
 
@@ -31,6 +32,33 @@ st.markdown("""
     .brand-tag { display: inline-block; background: #4472C4; color: white; padding: 0.2rem 0.6rem; border-radius: 20px; font-size: 0.8rem; margin: 0.1rem; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+
+    /* Mobile responsive — tablet */
+    @media (max-width: 768px) {
+        .brand-tag { font-size: 0.7rem; padding: 0.15rem 0.5rem; }
+        .job-card { padding: 0.8rem; }
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+        }
+        [data-testid="stHorizontalBlock"] > div {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+    }
+
+    /* Mobile responsive — phone */
+    @media (max-width: 480px) {
+        .brand-tag { font-size: 0.65rem; padding: 0.1rem 0.4rem; }
+        .job-card { padding: 0.6rem; margin-bottom: 0.5rem; }
+        [data-testid="stMultiSelect"],
+        [data-testid="stDownloadButton"],
+        [data-testid="stDownloadButton"] > button {
+            width: 100% !important;
+        }
+        [data-testid="stDownloadButton"] > button {
+            min-width: 100% !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -100,11 +128,13 @@ else:
             expanded=(status == "running"),
         ):
             # Info columns
-            c1, c2, c3, c4 = st.columns(4)
+            cost_info = get_job_cost(job_id)
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Outlets", job.get("total_outlets", "?"))
             c2.metric("Images", job.get("total_images", "?"))
             c3.metric("Processed", job.get("processed_outlets", 0))
             c4.metric("Errors", job.get("errors", 0))
+            c5.metric("API Cost", f"${cost_info['total_cost']:.3f}" if cost_info["total_calls"] > 0 else "—")
 
             # Timestamps
             created = job.get("created_at", "")[:19]
@@ -156,9 +186,19 @@ else:
 
             elif status == "failed":
                 st.error(f"Error: {job.get('error_message', 'Unknown error')}")
+                last_serial = job.get("last_processed_serial")
+                processed = job.get("processed_outlets", 0)
+                total = job.get("total_outlets", 0)
+                if processed > 0 and processed < total:
+                    st.info(f"Progress saved: {processed}/{total} outlets processed (last: #{last_serial}).")
+                if st.button("Resume Job", key=f"resume_{job_id}", type="primary"):
+                    resume_job(job_id)
+                    st.success(f"Resuming job **{job_id}** from outlet #{last_serial or 'start'}...")
+                    time.sleep(1)
+                    st.rerun()
 
             # Delete button
-            if st.button(f"Delete Job", key=f"del_{job_id}", type="secondary"):
+            if st.button("Delete Job", key=f"del_{job_id}", type="secondary"):
                 delete_job(job_id)
                 st.rerun()
 
