@@ -21,6 +21,7 @@ from corrections import (
     find_relevant_corrections, format_corrections_for_prompt,
     save_correction, get_correction_stats, load_corrections,
 )
+from confidence import compute_confidence
 
 load_dotenv()
 
@@ -78,6 +79,20 @@ with st.sidebar:
         st.success("System is learning from corrections")
     else:
         st.info("No corrections yet. Review results after analysis to start improving accuracy.")
+
+    st.markdown("---")
+    st.markdown("### Confidence Guide")
+    st.markdown(
+        '<div style="font-size:0.85rem; line-height:1.6;">'
+        '<span style="color:#00B050; font-weight:700;">HIGH (80-100%)</span><br>'
+        'All boxes clearly visible, brands and SKUs confidently identified. Minimal review needed.<br><br>'
+        '<span style="color:#FF8C00; font-weight:700;">MEDIUM (55-79%)</span><br>'
+        'Some boxes obscured, blurry, or hard to read. Review recommended — AI may have missed or misidentified some brands.<br><br>'
+        '<span style="color:#FF0000; font-weight:700;">LOW (0-54%)</span><br>'
+        'Significant visibility issues. Many boxes unreadable or unidentified. Manual review required.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     st.markdown("---")
     st.markdown(
@@ -207,7 +222,20 @@ if uploaded_file is not None:
                     skus_sorted = sorted(all_skus)
                     brand_tags = "".join(f'<span class="brand-tag">{b}</span>' for b in brands_sorted) if brands_sorted else '<span style="color:#999">No cigarette brands detected</span>'
                     sku_tags = "".join(f'<span class="sku-tag">{s}</span>' for s in skus_sorted) if skus_sorted else ''
-                    conf = worst_confidence
+
+                    # Compute multi-factor confidence
+                    # Collect brands per image for consistency check
+                    bpi = [r.get("brands", []) for r in per_image_results] if per_image_results else None
+                    conf_result = compute_confidence(
+                        ai_confidence=worst_confidence,
+                        brands_found=brands_sorted,
+                        skus_found=skus_sorted,
+                        unidentified_packs=total_unidentified,
+                        num_images=len(urls),
+                        brands_per_image=bpi,
+                    )
+                    conf = conf_result["level"]
+                    conf_score = conf_result["score"]
                     conf_class = f"status-{conf}"
                     card_class = "success" if brands_sorted else ("error" if error else "success")
 
@@ -218,7 +246,7 @@ if uploaded_file is not None:
                         f'<div style="display:flex; gap:2rem; align-items:flex-start; flex-wrap:wrap;">'
                         f'  <div><div class="metric-label">Serial</div><div style="font-size:1.2rem; font-weight:600;">{serial}</div></div>'
                         f'  <div><div class="metric-label">Brand Count</div><div class="metric-value">{len(brands_sorted)}</div></div>'
-                        f'  <div><div class="metric-label">Confidence</div><span class="status-badge {conf_class}">{conf}</span></div>'
+                        f'  <div><div class="metric-label">Confidence</div><span class="status-badge {conf_class}">{conf} ({conf_score}%)</span></div>'
                         f'  {unid_html}'
                         f'</div>'
                         f'<div style="margin-top:0.8rem;"><div class="metric-label">Brands</div>{brand_tags}</div>'
@@ -234,7 +262,8 @@ if uploaded_file is not None:
                 "skus": skus_sorted,
                 "thumbnails": thumbnails,
                 "unidentified_packs": total_unidentified,
-                "confidence": worst_confidence,
+                "confidence": conf_result["level"],
+                "confidence_score": conf_result["score"],
                 "error": error if not brands_sorted and error else None,
             }
             all_results.append(result_entry)
