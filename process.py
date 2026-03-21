@@ -32,7 +32,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Process CHHAT cigarette survey images.")
     parser.add_argument("input_file", help="Path to the CHHAT Excel file")
     parser.add_argument("--output", "-o", help="Output file path (default: <input>_results.xlsx)")
-    parser.add_argument("--model", "-m", default="claude-sonnet-4-6",
+    parser.add_argument("--model", "-m", default="gemini-2.5-pro",
                         help=f"AI model. Options: {', '.join(get_available_models())}")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay between API calls (seconds)")
     parser.add_argument("--start-row", type=int, default=3, help="First data row in Raw Data sheet (default: 3)")

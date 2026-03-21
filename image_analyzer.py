@@ -91,17 +91,17 @@ Be methodical: scan left-to-right, top-to-bottom. Report ALL cigarette boxes you
 
 # Maps user-friendly names to (provider, model_id)
 MODEL_REGISTRY = {
+    # Gemini models (recommended — best accuracy-to-throughput ratio)
+    "gemini-2.5-pro": ("gemini", "gemini-2.5-pro"),       # Default: best balance of accuracy + heavy load
+    "gemini-2.5-flash": ("gemini", "gemini-2.5-flash"),    # Fastest + cheapest, slightly less accurate
+    "gemini-3.1-pro": ("gemini", "gemini-3.1-pro-preview"),# Highest accuracy but preview/unstable
+    "gemini-3-pro": ("gemini", "gemini-3-pro-preview"),
+    "gemini-3-flash": ("gemini", "gemini-3-flash-preview"),
     # Claude models
     "claude-sonnet-4-6": ("claude", "claude-sonnet-4-6"),
     "claude-haiku-4-5": ("claude", "claude-haiku-4-5-20251001"),
     "claude-opus-4-6": ("claude", "claude-opus-4-6"),
-    # Gemini models
-    "gemini-3.1-pro": ("gemini", "gemini-3.1-pro-preview"),
-    "gemini-3-pro": ("gemini", "gemini-3-pro-preview"),
-    "gemini-3-flash": ("gemini", "gemini-3-flash-preview"),
-    "gemini-2.5-flash": ("gemini", "gemini-2.5-flash"),
-    "gemini-2.5-pro": ("gemini", "gemini-2.5-pro"),
-    # Open-source via Fireworks AI
+    # Open-source via Fireworks AI (fine-tunable)
     "qwen2.5-vl-72b": ("fireworks", "accounts/fireworks/models/qwen2p5-vl-72b-instruct"),
     "qwen2.5-vl-7b": ("fireworks", "accounts/fireworks/models/qwen2p5-vl-7b-instruct"),
 }
@@ -311,7 +311,7 @@ _PROVIDER_FNS = {
 def analyze_image(
     image_data: bytes,
     media_type: str,
-    model: str = "claude-sonnet-4-6",
+    model: str = "gemini-2.5-pro",
     api_keys: dict[str, str] | None = None,
     correction_context: str = "",
     # Legacy support: accept a client object and ignore it
@@ -365,7 +365,7 @@ def analyze_image(
         return {"error": f"{provider} API error: {e}"}
 
 
-def analyze_url(url: str, model: str = "claude-sonnet-4-6", api_keys: dict | None = None) -> dict:
+def analyze_url(url: str, model: str = "gemini-2.5-pro", api_keys: dict | None = None) -> dict:
     """Full pipeline: fetch image from URL → analyze."""
     try:
         image_data, media_type = fetch_image(url)

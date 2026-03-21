@@ -8,13 +8,18 @@ import threading
 
 
 # Requests per minute limits per provider/model
+# Set GEMINI_PAID_TIER=true in .env to use paid tier limits
+import os
+
+_gemini_paid = os.getenv("GEMINI_PAID_TIER", "").lower() in ("true", "1", "yes")
+
 RATE_LIMITS = {
-    # Gemini free tier
-    "gemini-3.1-pro": 5,
-    "gemini-3-pro": 5,
-    "gemini-3-flash": 10,
-    "gemini-2.5-flash": 10,
-    "gemini-2.5-pro": 5,
+    # Gemini — paid tier (Tier 1) vs free tier
+    "gemini-2.5-pro": 360 if _gemini_paid else 5,
+    "gemini-2.5-flash": 1000 if _gemini_paid else 10,
+    "gemini-3.1-pro": 50 if _gemini_paid else 5,
+    "gemini-3-pro": 50 if _gemini_paid else 5,
+    "gemini-3-flash": 200 if _gemini_paid else 10,
     # Claude (Tier 1)
     "claude-sonnet-4-6": 50,
     "claude-haiku-4-5": 50,
