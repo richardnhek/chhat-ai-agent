@@ -132,6 +132,20 @@ if uploaded_file is not None:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
 
+    # Validate file
+    from validation import validate_excel_file, validate_api_keys, estimate_processing_time
+
+    file_check = validate_excel_file(tmp_path)
+    if not file_check["valid"]:
+        st.error(f"Invalid file: {file_check['error']}")
+        st.stop()
+
+    # Validate API key
+    key_check = validate_api_keys(model)
+    if not key_check["valid"]:
+        st.error(f"API key issue: {key_check['error']}")
+        st.stop()
+
     try:
         rows = read_raw_data(tmp_path, start_row=start_row, photo_cols_str=photo_cols)
     except Exception as e:
@@ -143,9 +157,14 @@ if uploaded_file is not None:
     preview = [{"Serial": r["serial"], "Images": len(r["urls"]), "First URL": r["urls"][0][:60] + "..." if r["urls"] else "None"} for r in rows]
     st.dataframe(pd.DataFrame(preview), use_container_width=True, height=min(len(rows) * 40 + 40, 300))
 
-    c1, c2 = st.columns(2)
+    total_images = sum(len(r["urls"]) for r in rows)
+    time_est = estimate_processing_time(total_images, model=model, enhancements_enabled=enable_ocr or enable_sku_refinement)
+
+    c1, c2, c3 = st.columns(3)
     c1.metric("Total Outlets", len(rows))
-    c2.metric("Total Images", sum(len(r["urls"]) for r in rows))
+    c2.metric("Total Images", total_images)
+    c3.metric("Est. Time", time_est["display"])
+    st.caption(f"Using {model} at {time_est['rpm']} RPM with {time_est['workers']} parallel workers. ~{time_est['per_image_seconds']}s per image.")
 
     st.markdown("---")
 

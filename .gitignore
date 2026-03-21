@@ -13,3 +13,4 @@ demo_input*
 job_outputs/
 jobs.json
 *.tmp*
+logs/

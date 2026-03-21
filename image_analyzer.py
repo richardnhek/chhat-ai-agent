@@ -13,6 +13,8 @@ import requests
 from PIL import Image
 
 from brands import get_brand_list_for_prompt
+from retry import retry_with_backoff
+from logger import get_logger
 
 
 # Supported image MIME types
@@ -230,6 +232,7 @@ def _parse_response(response_text: str) -> dict:
 
 # ── Claude (Anthropic) ──────────────────────────────────────────────────────
 
+@retry_with_backoff(max_retries=3, base_delay=2.0)
 def _analyze_claude(image_data: bytes, media_type: str, model: str, api_key: str, prompt: str = "") -> dict:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
@@ -251,6 +254,7 @@ def _analyze_claude(image_data: bytes, media_type: str, model: str, api_key: str
 
 # ── Gemini (Google) ──────────────────────────────────────────────────────────
 
+@retry_with_backoff(max_retries=3, base_delay=2.0)
 def _analyze_gemini(image_data: bytes, media_type: str, model: str, api_key: str, prompt: str = "") -> dict:
     from google import genai
     from google.genai import types
@@ -273,6 +277,7 @@ def _analyze_gemini(image_data: bytes, media_type: str, model: str, api_key: str
 
 # ── Qwen2.5-VL via Fireworks AI (OpenAI-compatible) ─────────────────────────
 
+@retry_with_backoff(max_retries=3, base_delay=2.0)
 def _analyze_fireworks(image_data: bytes, media_type: str, model: str, api_key: str, prompt: str = "") -> dict:
     from openai import OpenAI
 
