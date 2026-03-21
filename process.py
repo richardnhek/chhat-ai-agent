@@ -2,7 +2,7 @@
 """
 Process the client's CHHAT Excel file:
 1. Read Raw Data sheet (serial + image links)
-2. For each row, fetch images and analyze with Claude Vision
+2. Fetch and analyze images in PARALLEL using thread pool
 3. Output Excel with: serial | embedded images | Q12A brands | Q12B SKUs | brand count
 """
 
@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 from openpyxl import Workbook
@@ -23,6 +24,7 @@ from PIL import Image as PILImage
 from image_analyzer import fetch_image, analyze_image, _resize_image, get_available_models
 from brands import format_q12a, BRANDS_AND_SKUS
 from corrections import find_relevant_corrections, format_corrections_for_prompt, get_correction_stats
+from confidence import compute_confidence
 
 
 def parse_args():
@@ -31,11 +33,12 @@ def parse_args():
     parser.add_argument("--output", "-o", help="Output file path (default: <input>_results.xlsx)")
     parser.add_argument("--model", "-m", default="claude-sonnet-4-6",
                         help=f"AI model. Options: {', '.join(get_available_models())}")
-    parser.add_argument("--delay", type=float, default=1.5, help="Delay between API calls (seconds)")
+    parser.add_argument("--delay", type=float, default=0.5, help="Delay between API calls (seconds)")
     parser.add_argument("--start-row", type=int, default=3, help="First data row in Raw Data sheet (default: 3)")
     parser.add_argument("--limit", type=int, help="Only process first N rows (for testing)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be processed")
     parser.add_argument("--photo-cols", default="B,C,D", help="Columns with Q32 photo links (default: B,C,D)")
+    parser.add_argument("--workers", "-w", type=int, default=5, help="Number of parallel workers (default: 5)")
     return parser.parse_args()
 
 
@@ -77,6 +80,92 @@ def create_thumbnail(image_data: bytes, max_size=(200, 200)) -> bytes:
     return buf.getvalue()
 
 
+def _process_single_image(url, model, api_keys, correction_context):
+    """Process a single image — used by both sequential and parallel modes."""
+    image_data, media_type = fetch_image(url)
+    thumbnail = create_thumbnail(image_data)
+    analysis = analyze_image(
+        image_data, media_type,
+        model=model, api_keys=api_keys,
+        correction_context=correction_context,
+    )
+    return {
+        "url": url,
+        "thumbnail": thumbnail,
+        "analysis": analysis,
+    }
+
+
+def _process_outlet(row, model, api_keys, correction_context):
+    """Process all images for a single outlet — runs in thread pool."""
+    serial = row["serial"]
+    urls = row["urls"]
+
+    all_brands = set()
+    all_skus = set()
+    thumbnails = []
+    total_unidentified = 0
+    brands_per_image = []
+    ai_confidences = []
+    error = None
+
+    for url in urls:
+        try:
+            result = _process_single_image(url, model, api_keys, correction_context)
+            thumbnails.append(result["thumbnail"])
+            analysis = result["analysis"]
+
+            if "error" not in analysis:
+                img_brands = []
+                for brand_entry in analysis.get("brands_found", []):
+                    brand_name = brand_entry.get("brand", "")
+                    if brand_name in BRANDS_AND_SKUS:
+                        all_brands.add(brand_name)
+                        img_brands.append(brand_name)
+                    for sku in brand_entry.get("skus", []):
+                        if sku:
+                            all_skus.add(sku)
+                brands_per_image.append(img_brands)
+                total_unidentified += analysis.get("unidentified_packs", 0)
+                ai_confidences.append(analysis.get("confidence", "medium"))
+            else:
+                error = analysis["error"]
+
+        except Exception as e:
+            error = str(e)
+
+    brands_sorted = sorted(all_brands)
+    skus_sorted = sorted(all_skus)
+
+    # Compute confidence score
+    worst_ai_conf = "high"
+    conf_rank = {"low": 0, "medium": 1, "high": 2}
+    for c in ai_confidences:
+        if conf_rank.get(c, 1) < conf_rank.get(worst_ai_conf, 2):
+            worst_ai_conf = c
+
+    confidence_result = compute_confidence(
+        ai_confidence=worst_ai_conf,
+        brands_found=brands_sorted,
+        skus_found=skus_sorted,
+        unidentified_packs=total_unidentified,
+        num_images=len(urls),
+        brands_per_image=brands_per_image,
+    )
+
+    return {
+        "serial": serial,
+        "brands": brands_sorted,
+        "skus": skus_sorted,
+        "thumbnails": thumbnails,
+        "unidentified_packs": total_unidentified,
+        "confidence": confidence_result["level"],
+        "confidence_score": confidence_result["score"],
+        "confidence_factors": confidence_result["factors"],
+        "error": error if not brands_sorted and error else None,
+    }
+
+
 def build_output(results: list[dict], output_path: str):
     """Build the output Excel with embedded images and brand analysis."""
     wb = Workbook()
@@ -93,7 +182,7 @@ def build_output(results: list[dict], output_path: str):
         ("F", "Q12B - SKUs", 60),
         ("G", "Brand Count", 14),
         ("H", "Unidentified Packs", 18),
-        ("I", "Confidence", 14),
+        ("I", "Confidence", 18),
         ("J", "Status", 12),
     ]
 
@@ -111,16 +200,15 @@ def build_output(results: list[dict], output_path: str):
     # Data rows
     for i, result in enumerate(results):
         row = i + 2
-        ws.row_dimensions[row].height = 120  # Tall rows for images
+        ws.row_dimensions[row].height = 120
 
-        # Serial number
         ws.cell(row=row, column=1, value=result["serial"])
         ws.cell(row=row, column=1).alignment = Alignment(vertical="center")
 
-        # Embed images (up to 3)
+        # Embed images
         thumbnails = result.get("thumbnails", [])
         for img_idx, thumb_data in enumerate(thumbnails[:3]):
-            col = img_idx + 2  # B=2, C=3, D=4
+            col = img_idx + 2
             try:
                 img_stream = io.BytesIO(thumb_data)
                 img = XlImage(img_stream)
@@ -133,8 +221,7 @@ def build_output(results: list[dict], output_path: str):
 
         # Q12A - Brands
         brands = result.get("brands", [])
-        q12a = format_q12a(brands)
-        ws.cell(row=row, column=5, value=q12a)
+        ws.cell(row=row, column=5, value=format_q12a(brands))
         ws.cell(row=row, column=5).alignment = Alignment(wrap_text=True, vertical="center")
 
         # Q12B - SKUs
@@ -154,9 +241,11 @@ def build_output(results: list[dict], output_path: str):
         if unidentified and unidentified > 0:
             cell_unid.font = Font(color="FF8C00", bold=True)
 
-        # Confidence
+        # Confidence (show score + level)
         confidence = result.get("confidence", "")
-        cell_conf = ws.cell(row=row, column=9, value=confidence)
+        conf_score = result.get("confidence_score", "")
+        conf_display = f"{confidence} ({conf_score}%)" if conf_score else confidence
+        cell_conf = ws.cell(row=row, column=9, value=conf_display)
         cell_conf.alignment = Alignment(horizontal="center", vertical="center")
         if confidence == "high":
             cell_conf.font = Font(color="00B050", bold=True)
@@ -189,14 +278,12 @@ def main():
 
     output_path = args.output or str(input_path.with_stem(input_path.stem + "_results"))
 
-    # Build API keys from env
     api_keys = {
         "claude": os.getenv("ANTHROPIC_API_KEY", ""),
         "gemini": os.getenv("GEMINI_API_KEY", ""),
         "fireworks": os.getenv("FIREWORKS_API_KEY", ""),
     }
 
-    # Read data
     rows = read_raw_data(str(input_path), start_row=args.start_row, photo_cols_str=args.photo_cols)
 
     if args.limit:
@@ -205,10 +292,11 @@ def main():
     print(f"\n{'='*60}")
     print(f"  CHHAT Cigarette Brand Analyzer")
     print(f"{'='*60}")
-    print(f"  Input:  {input_path}")
-    print(f"  Output: {output_path}")
-    print(f"  Rows:   {len(rows)}")
-    print(f"  Model:  {args.model}")
+    print(f"  Input:   {input_path}")
+    print(f"  Output:  {output_path}")
+    print(f"  Rows:    {len(rows)}")
+    print(f"  Model:   {args.model}")
+    print(f"  Workers: {args.workers} (parallel)")
 
     if args.dry_run:
         print(f"\n--- DRY RUN ---")
@@ -218,82 +306,68 @@ def main():
                 print(f"    {u[:80]}...")
         sys.exit(0)
 
-    # Load past corrections for few-shot learning
+    # Load past corrections
     stats = get_correction_stats()
     if stats["total"] > 0:
-        print(f"  Corrections loaded: {stats['total']} past corrections")
+        print(f"  Corrections: {stats['total']} past corrections loaded")
         recent_corrections = find_relevant_corrections(limit=5)
         correction_context = format_corrections_for_prompt(recent_corrections)
     else:
-        print(f"  Corrections: none yet (first run)")
+        print(f"  Corrections: none yet")
         correction_context = ""
 
+    total_images = sum(len(r["urls"]) for r in rows)
+    print(f"  Total images: {total_images}")
+
     print(f"\n{'─'*60}")
-    print(f"  Processing {len(rows)} outlets...\n")
+    print(f"  Processing {len(rows)} outlets ({args.workers} parallel workers)...\n")
 
-    results = []
-    for i, row in enumerate(rows, 1):
-        serial = row["serial"]
-        urls = row["urls"]
+    start_time = time.time()
 
-        print(f"  [{i}/{len(rows)}] Serial {serial} ({len(urls)} image(s))")
+    # ── Parallel processing ──────────────────────────────────────────
+    results = [None] * len(rows)
+    completed = 0
 
-        all_brands = set()
-        all_skus = set()
-        thumbnails = []
-        total_unidentified = 0
-        worst_confidence = "high"
-        error = None
-        confidence_rank = {"low": 0, "medium": 1, "high": 2}
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        future_to_idx = {}
+        for idx, row in enumerate(rows):
+            future = executor.submit(
+                _process_outlet, row, args.model, api_keys, correction_context
+            )
+            future_to_idx[future] = idx
 
-        for url_idx, url in enumerate(urls):
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            completed += 1
             try:
-                image_data, media_type = fetch_image(url)
-                thumbnails.append(create_thumbnail(image_data))
-
-                # Analyze
-                analysis = analyze_image(image_data, media_type, model=args.model, api_keys=api_keys, correction_context=correction_context)
-
-                if "error" not in analysis:
-                    for brand_entry in analysis.get("brands_found", []):
-                        brand_name = brand_entry.get("brand", "")
-                        if brand_name in BRANDS_AND_SKUS:
-                            all_brands.add(brand_name)
-                        for sku in brand_entry.get("skus", []):
-                            if sku:
-                                all_skus.add(sku)
-                    total_unidentified += analysis.get("unidentified_packs", 0)
-                    img_conf = analysis.get("confidence", "medium")
-                    if confidence_rank.get(img_conf, 1) < confidence_rank.get(worst_confidence, 2):
-                        worst_confidence = img_conf
-                else:
-                    error = analysis["error"]
-
+                result = future.result()
+                results[idx] = result
+                serial = result["serial"]
+                brands = result["brands"]
+                conf = result.get("confidence", "?")
+                conf_score = result.get("confidence_score", "?")
+                unid = result.get("unidentified_packs", 0)
+                unid_str = f" | Unidentified: {unid}" if unid else ""
+                print(
+                    f"  [{completed}/{len(rows)}] Serial {serial}: "
+                    f"{', '.join(brands) if brands else 'None'} ({len(brands)}) "
+                    f"| Confidence: {conf} ({conf_score}%){unid_str}"
+                )
             except Exception as e:
-                print(f"           Image {url_idx+1} error: {e}")
-                error = str(e)
+                row = rows[idx]
+                results[idx] = {
+                    "serial": row["serial"],
+                    "brands": [],
+                    "skus": [],
+                    "thumbnails": [],
+                    "unidentified_packs": 0,
+                    "confidence": "low",
+                    "confidence_score": 0,
+                    "error": str(e),
+                }
+                print(f"  [{completed}/{len(rows)}] Serial {row['serial']}: ERROR — {e}")
 
-            if url_idx < len(urls) - 1:
-                time.sleep(args.delay)
-
-        brands_sorted = sorted(all_brands)
-        skus_sorted = sorted(all_skus)
-
-        unid_str = f" | Unidentified: {total_unidentified}" if total_unidentified else ""
-        print(f"           Brands: {', '.join(brands_sorted) if brands_sorted else 'None'} ({len(brands_sorted)}) | Confidence: {worst_confidence}{unid_str}")
-
-        results.append({
-            "serial": serial,
-            "brands": brands_sorted,
-            "skus": skus_sorted,
-            "thumbnails": thumbnails,
-            "unidentified_packs": total_unidentified,
-            "confidence": worst_confidence,
-            "error": error if not brands_sorted and error else None,
-        })
-
-        if i < len(rows):
-            time.sleep(args.delay)
+    elapsed = time.time() - start_time
 
     # Build output
     print(f"\n{'─'*60}")
@@ -303,12 +377,16 @@ def main():
     # Summary
     total_brands = set()
     for r in results:
-        total_brands.update(r["brands"])
+        if r:
+            total_brands.update(r.get("brands", []))
+
+    avg_conf = sum(r.get("confidence_score", 0) for r in results if r) / len(results) if results else 0
 
     print(f"\n{'='*60}")
-    print(f"  DONE!")
+    print(f"  DONE in {elapsed:.1f}s ({elapsed/len(rows):.1f}s per outlet)")
     print(f"  Outlets processed: {len(results)}")
-    print(f"  Unique brands across all outlets: {len(total_brands)}")
+    print(f"  Unique brands: {len(total_brands)}")
+    print(f"  Avg confidence: {avg_conf:.0f}%")
     if total_brands:
         print(f"  Brands: {', '.join(sorted(total_brands))}")
     print(f"  Output: {output_path}")
