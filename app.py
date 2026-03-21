@@ -15,6 +15,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from image_analyzer import fetch_image, analyze_image, get_available_models
+from enhancements import analyze_image_enhanced
 from brands import format_q12a, BRANDS_AND_SKUS, BRAND_KHMER
 from process import read_raw_data, create_thumbnail, build_output
 from corrections import (
@@ -63,6 +64,22 @@ with st.sidebar:
     delay = st.slider("Delay between calls (sec)", 0.5, 5.0, 1.5, 0.5)
     photo_cols = st.text_input("Q32 Photo columns", value="B,C,D", help="Comma-separated column letters")
     start_row = st.number_input("Data starts at row", value=3, min_value=2)
+
+    st.markdown("---")
+    st.markdown("### Enhancements")
+    enable_enhancement = st.checkbox("Image Enhancement", value=True,
+        help="Sharpening, denoising, contrast boost, glare reduction")
+    enable_ocr = st.checkbox("OCR Text Pre-scan", value=True,
+        help="Extract text from packs first to help identify brands/SKUs")
+    enable_sku_refinement = st.checkbox("Two-Pass SKU Refinement", value=True,
+        help="Second focused pass to identify exact SKU variants")
+    enable_cross_val = st.checkbox("Cross-Model Validation", value=False,
+        help="Run through 2 models and compare (doubles API cost)")
+    cross_val_models = None
+    if enable_cross_val:
+        cross_val_models = st.multiselect("Validation models",
+            all_models, default=[all_models[0], all_models[5]] if len(all_models) > 5 else all_models[:2],
+            key="cross_val_models")
 
     st.markdown("---")
     # Show correction stats
@@ -184,7 +201,16 @@ if uploaded_file is not None:
                                     st.image(image_data, caption=f"Serial {serial} - Image {url_idx+1}", use_container_width=True)
 
                             with st.spinner(f"Analyzing image {url_idx+1}..."):
-                                analysis = analyze_image(image_data, media_type, model=model, api_keys=api_keys, correction_context=correction_context)
+                                analysis = analyze_image_enhanced(
+                                    image_data, media_type,
+                                    model=model, api_keys=api_keys,
+                                    correction_context=correction_context,
+                                    enable_enhancement=enable_enhancement,
+                                    enable_ocr=enable_ocr,
+                                    enable_sku_refinement=enable_sku_refinement,
+                                    enable_cross_validation=enable_cross_val,
+                                    cross_validation_models=cross_val_models if enable_cross_val else None,
+                                )
 
                             if "error" not in analysis:
                                 img_brands = []

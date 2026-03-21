@@ -26,6 +26,7 @@ from brands import format_q12a, BRANDS_AND_SKUS
 from corrections import find_relevant_corrections, format_corrections_for_prompt, get_correction_stats
 from confidence import compute_confidence
 from rate_limiter import RateLimiter
+from enhancements import analyze_image_enhanced
 
 
 def parse_args():
@@ -40,6 +41,10 @@ def parse_args():
     parser.add_argument("--dry-run", action="store_true", help="Show what would be processed")
     parser.add_argument("--photo-cols", default="B,C,D", help="Columns with Q32 photo links (default: B,C,D)")
     parser.add_argument("--workers", "-w", type=int, default=5, help="Number of parallel workers (default: 5)")
+    parser.add_argument("--no-enhance", action="store_true", help="Disable image enhancement")
+    parser.add_argument("--no-ocr", action="store_true", help="Disable OCR text pre-extraction")
+    parser.add_argument("--no-sku-refine", action="store_true", help="Disable two-pass SKU refinement")
+    parser.add_argument("--cross-validate", nargs="+", help="Cross-validate with multiple models (e.g. --cross-validate gemini-2.5-pro claude-sonnet-4-6)")
     return parser.parse_args()
 
 
@@ -97,7 +102,9 @@ def _process_single_image(url, model, api_keys, correction_context):
     }
 
 
-def _process_outlet(row, model, api_keys, correction_context, limiter=None):
+def _process_outlet(row, model, api_keys, correction_context, limiter=None,
+                    enable_enhancement=True, enable_ocr=True, enable_sku_refinement=True,
+                    cross_validation_models=None):
     """Process all images for a single outlet — runs in thread pool."""
     serial = row["serial"]
     urls = row["urls"]
@@ -114,9 +121,22 @@ def _process_outlet(row, model, api_keys, correction_context, limiter=None):
         try:
             if limiter:
                 limiter.wait()
-            result = _process_single_image(url, model, api_keys, correction_context)
-            thumbnails.append(result["thumbnail"])
-            analysis = result["analysis"]
+
+            # Fetch image
+            image_data, media_type = fetch_image(url)
+            thumbnails.append(create_thumbnail(image_data))
+
+            # Use enhanced pipeline
+            analysis = analyze_image_enhanced(
+                image_data, media_type,
+                model=model, api_keys=api_keys,
+                correction_context=correction_context,
+                enable_enhancement=enable_enhancement,
+                enable_ocr=enable_ocr,
+                enable_sku_refinement=enable_sku_refinement,
+                enable_cross_validation=bool(cross_validation_models),
+                cross_validation_models=cross_validation_models,
+            )
 
             if "error" not in analysis:
                 img_brands = []
@@ -132,7 +152,7 @@ def _process_outlet(row, model, api_keys, correction_context, limiter=None):
                 total_unidentified += analysis.get("unidentified_packs", 0)
                 ai_confidences.append(analysis.get("confidence", "medium"))
             else:
-                error = analysis["error"]
+                error = analysis.get("error", str(analysis))
 
         except Exception as e:
             error = str(e)
@@ -386,11 +406,28 @@ def main():
     if safe_workers < args.workers:
         print(f"  Rate limit: {limiter.rpm} RPM for {args.model}, capping workers at {safe_workers}")
 
+    # Enhancement flags
+    enhance = not args.no_enhance
+    ocr = not args.no_ocr
+    sku_refine = not args.no_sku_refine
+    cross_models = args.cross_validate
+
+    enhancements_active = []
+    if enhance: enhancements_active.append("image-enhance")
+    if ocr: enhancements_active.append("OCR-assist")
+    if sku_refine: enhancements_active.append("SKU-refine")
+    if cross_models: enhancements_active.append(f"cross-validate({','.join(cross_models)})")
+    print(f"  Enhancements: {', '.join(enhancements_active) if enhancements_active else 'none'}")
+
     with ThreadPoolExecutor(max_workers=safe_workers) as executor:
         future_to_idx = {}
         for idx, row in enumerate(rows):
             future = executor.submit(
-                _process_outlet, row, args.model, api_keys, correction_context, limiter
+                _process_outlet, row, args.model, api_keys, correction_context, limiter,
+                enable_enhancement=enhance,
+                enable_ocr=ocr,
+                enable_sku_refinement=sku_refine,
+                cross_validation_models=cross_models,
             )
             future_to_idx[future] = idx
 
