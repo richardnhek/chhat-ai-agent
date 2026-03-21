@@ -10,3 +10,6 @@ KH Census_Brand Book*
 CHHAT_TC*
 demo_input*
 *.output
+job_outputs/
+jobs.json
+*.tmp*

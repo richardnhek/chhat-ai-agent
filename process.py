@@ -25,6 +25,7 @@ from image_analyzer import fetch_image, analyze_image, _resize_image, get_availa
 from brands import format_q12a, BRANDS_AND_SKUS
 from corrections import find_relevant_corrections, format_corrections_for_prompt, get_correction_stats
 from confidence import compute_confidence
+from rate_limiter import RateLimiter
 
 
 def parse_args():
@@ -96,7 +97,7 @@ def _process_single_image(url, model, api_keys, correction_context):
     }
 
 
-def _process_outlet(row, model, api_keys, correction_context):
+def _process_outlet(row, model, api_keys, correction_context, limiter=None):
     """Process all images for a single outlet — runs in thread pool."""
     serial = row["serial"]
     urls = row["urls"]
@@ -111,6 +112,8 @@ def _process_outlet(row, model, api_keys, correction_context):
 
     for url in urls:
         try:
+            if limiter:
+                limiter.wait()
             result = _process_single_image(url, model, api_keys, correction_context)
             thumbnails.append(result["thumbnail"])
             analysis = result["analysis"]
@@ -378,11 +381,16 @@ def main():
     results = [None] * len(rows)
     completed = 0
 
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+    limiter = RateLimiter(args.model)
+    safe_workers = min(args.workers, limiter.get_safe_workers())
+    if safe_workers < args.workers:
+        print(f"  Rate limit: {limiter.rpm} RPM for {args.model}, capping workers at {safe_workers}")
+
+    with ThreadPoolExecutor(max_workers=safe_workers) as executor:
         future_to_idx = {}
         for idx, row in enumerate(rows):
             future = executor.submit(
-                _process_outlet, row, args.model, api_keys, correction_context
+                _process_outlet, row, args.model, api_keys, correction_context, limiter
             )
             future_to_idx[future] = idx
 
