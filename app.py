@@ -26,6 +26,21 @@ from confidence import compute_confidence
 
 load_dotenv()
 
+import requests as _requests
+from urllib.parse import urlparse as _urlparse
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_display_image(url: str) -> bytes:
+    """Fetch full-resolution image for display (cached for 1 hour)."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "image/*,*/*;q=0.8",
+        "Referer": _urlparse(url).scheme + "://" + _urlparse(url).netloc + "/",
+    }
+    resp = _requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return resp.content
+
 from auth import check_auth
 
 st.set_page_config(
@@ -349,11 +364,17 @@ if uploaded_file is not None:
             with container:
                 with st.container():
                     urls = row["urls"]
-                    if thumbnails:
-                        img_cols = st.columns(min(len(thumbnails), 3))
-                        for url_idx, thumb in enumerate(thumbnails[:3]):
+                    if urls:
+                        img_cols = st.columns(min(len(urls), 3))
+                        for url_idx, url in enumerate(urls[:3]):
                             with img_cols[url_idx]:
-                                st.image(thumb, caption=f"Serial {serial} - Image {url_idx+1}", use_container_width=True)
+                                try:
+                                    # Fetch full-resolution image for display (not the tiny thumbnail)
+                                    display_img = _fetch_display_image(url)
+                                    st.image(display_img, caption=f"Serial {serial} - Image {url_idx+1}", use_container_width=True)
+                                except Exception:
+                                    if url_idx < len(thumbnails):
+                                        st.image(thumbnails[url_idx], caption=f"Serial {serial} - Image {url_idx+1}", use_container_width=True)
 
                     # Use results from parallel processing
                     conf_result = compute_confidence(
