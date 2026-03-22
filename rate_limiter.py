@@ -55,11 +55,12 @@ class RateLimiter:
 
     def get_safe_workers(self) -> int:
         """Return the max number of parallel workers that won't exceed rate limits."""
-        # With N workers and interval I, effective RPM = N * (60/I) = N * RPM
-        # We want N * RPM_per_worker <= RPM_limit
-        # But each worker waits on the shared limiter, so workers is bounded by RPM
-        # Practically: allow up to RPM/3 workers (leaving headroom)
-        return max(1, self.rpm // 3)
+        # Each worker holds a thread while waiting for API response (~5-10s).
+        # The rate limiter gates outgoing requests, so we need enough workers
+        # to keep the pipeline full without overwhelming the system.
+        # Cap at 15 workers max — beyond that, diminishing returns and resource waste.
+        workers = max(1, min(self.rpm // 6, 15))
+        return workers
 
     def __repr__(self):
         return f"RateLimiter(model={self.model}, rpm={self.rpm}, interval={self.interval:.1f}s)"

@@ -110,36 +110,51 @@ def estimate_processing_time(
 ) -> dict:
     """
     Estimate processing time based on model RPM and image count.
+    Accounts for real-world API latency (~5s per call) and network overhead.
     """
     from rate_limiter import RateLimiter
 
     limiter = RateLimiter(model)
     safe_workers = limiter.get_safe_workers()
 
-    # Base time per image (API call)
-    base_time_per_image = limiter.interval  # seconds between requests
+    # Each image requires API calls:
+    # - 1 main analysis call (~5s latency)
+    # - 1 OCR call (~3s) if enhancements enabled
+    # - 1 SKU refinement call (~4s) if enhancements enabled
+    calls_per_image = 1
+    avg_call_latency = 5.0  # seconds per API call (real-world average)
 
-    # Enhancement overhead per image
-    enhancement_overhead = 0
     if enhancements_enabled:
-        enhancement_overhead = 8  # ~8s extra for OCR + SKU refinement (2 extra API calls)
+        calls_per_image = 3  # main + OCR + SKU refine
 
-    # Total time with parallelism
-    effective_time_per_image = base_time_per_image + enhancement_overhead
-    total_sequential = num_images * effective_time_per_image
-    total_parallel = total_sequential / safe_workers
+    total_api_calls = num_images * calls_per_image
 
-    # Add overhead for fetching images
-    fetch_overhead = num_images * 1.5  # ~1.5s per image fetch
-    total_with_fetch = total_parallel + (fetch_overhead / safe_workers)
+    # Rate limit: how fast can we START calls?
+    # With RPM limit, we can start (RPM / 60) calls per second
+    calls_per_second = limiter.rpm / 60.0
 
-    minutes = total_with_fetch / 60
+    # Time to issue all calls (rate-limited)
+    time_to_issue = total_api_calls / calls_per_second
+
+    # Time for last batch of calls to complete
+    # With N workers, last batch takes avg_call_latency seconds
+    completion_overhead = avg_call_latency
+
+    # Image fetch overhead (~2s per image, parallelized)
+    fetch_time = (num_images * 2.0) / safe_workers
+
+    total_seconds = time_to_issue + completion_overhead + fetch_time
+
+    # Add 20% buffer for network variance
+    total_seconds *= 1.2
+
+    minutes = total_seconds / 60
 
     return {
-        "estimated_seconds": int(total_with_fetch),
+        "estimated_seconds": int(total_seconds),
         "estimated_minutes": round(minutes, 1),
-        "display": f"~{int(minutes)}min" if minutes >= 1 else f"~{int(total_with_fetch)}sec",
+        "display": f"~{int(minutes)}min" if minutes >= 1 else f"~{int(total_seconds)}sec",
         "workers": safe_workers,
         "rpm": limiter.rpm,
-        "per_image_seconds": round(effective_time_per_image, 1),
+        "per_image_seconds": round(total_seconds / num_images, 1) if num_images > 0 else 0,
     }
