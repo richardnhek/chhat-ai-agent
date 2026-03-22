@@ -14,7 +14,12 @@ from enhancements import enhance_image
 
 load_dotenv()
 
+from auth import check_auth
+
 st.set_page_config(page_title="Outlet Detail", page_icon="🔎", layout="wide")
+
+if not check_auth():
+    st.stop()
 
 st.markdown("""
 <style>

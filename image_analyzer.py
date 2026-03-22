@@ -15,6 +15,7 @@ from PIL import Image
 from brands import get_brand_list_for_prompt
 from retry import retry_with_backoff
 from logger import get_logger
+from image_cache import get_cached_image, cache_image
 
 
 # Supported image MIME types
@@ -128,8 +129,20 @@ def get_provider(model_name: str) -> str:
 
 # ── Image fetching ───────────────────────────────────────────────────────────
 
-def fetch_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
-    """Fetch an image from a URL and return (image_bytes, media_type)."""
+def fetch_image(url: str, timeout: int = 30, use_cache: bool = True) -> tuple[bytes, str]:
+    """Fetch an image from a URL and return (image_bytes, media_type).
+
+    Args:
+        url: Image URL to fetch.
+        timeout: HTTP request timeout in seconds.
+        use_cache: If True (default), check disk cache before fetching and cache after fetch.
+    """
+    # Check cache first
+    if use_cache:
+        cached = get_cached_image(url)
+        if cached is not None:
+            return cached
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -159,6 +172,11 @@ def fetch_image(url: str, timeout: int = 30) -> tuple[bytes, str]:
 
     image_data = response.content
     image_data, media_type = _resize_image(image_data, media_type)
+
+    # Cache after successful fetch
+    if use_cache:
+        cache_image(url, image_data, media_type)
+
     return image_data, media_type
 
 

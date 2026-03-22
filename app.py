@@ -26,12 +26,17 @@ from confidence import compute_confidence
 
 load_dotenv()
 
+from auth import check_auth
+
 st.set_page_config(
     page_title="CHHAT Brand Analyzer",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if not check_auth():
+    st.stop()
 
 st.markdown("""
 <style>

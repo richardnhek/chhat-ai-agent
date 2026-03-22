@@ -20,7 +20,12 @@ from cost_tracker import get_job_cost
 
 load_dotenv()
 
+from auth import check_auth
+
 st.set_page_config(page_title="Job Manager", page_icon="📋", layout="wide")
+
+if not check_auth():
+    st.stop()
 
 st.markdown("""
 <style>

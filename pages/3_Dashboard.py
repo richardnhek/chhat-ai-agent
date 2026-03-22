@@ -8,10 +8,16 @@ from dotenv import load_dotenv
 from stats import get_accuracy_stats, get_confusion_matrix, get_processing_stats, export_corrections_csv
 from corrections import get_correction_stats
 from cost_tracker import get_total_cost
+from image_cache import get_cache_stats
 
 load_dotenv()
 
+from auth import check_auth
+
 st.set_page_config(page_title="Dashboard", page_icon="📊", layout="wide")
+
+if not check_auth():
+    st.stop()
 
 st.markdown("""
 <style>
@@ -84,6 +90,13 @@ if cost_stats["total_calls"] > 0:
 
 if proc_stats.get("avg_processing_time_seconds"):
     st.caption(f"Average job processing time: {proc_stats['avg_processing_time_seconds']:.0f}s")
+
+# ── Image Cache Stats ──────────────────────────────────────────────────
+cache_stats = get_cache_stats()
+if cache_stats["total_images"] > 0:
+    cc1, cc2 = st.columns(2)
+    cc1.metric("Cached Images", cache_stats["total_images"])
+    cc2.metric("Cache Size", f"{cache_stats['cache_size_mb']:.1f} MB")
 
 # ── Accuracy Stats ──────────────────────────────────────────────────────
 

@@ -22,42 +22,21 @@ from process import create_thumbnail, build_output, build_client_format, read_ra
 from enhancements import analyze_image_enhanced, compute_blur_score
 from rate_limiter import RateLimiter
 from cost_tracker import track_call
+from database import (
+    get_all_jobs,
+    get_job,
+    create_job,
+    _update_job,
+    delete_job as _db_delete_job,
+)
 
 load_dotenv()
 
-JOBS_FILE = "jobs.json"
 PARTIAL_DIR = Path("job_outputs")
 
 # In-memory store for active job threads and progress
 _active_jobs: dict[str, dict] = {}
 _job_lock = threading.Lock()
-
-
-def _load_jobs() -> list[dict]:
-    p = Path(JOBS_FILE)
-    if not p.exists():
-        return []
-    try:
-        with open(p, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return []
-
-
-def _save_jobs(jobs: list[dict]):
-    with open(JOBS_FILE, "w") as f:
-        json.dump(jobs, f, indent=2, default=str, ensure_ascii=False)
-
-
-def get_all_jobs() -> list[dict]:
-    return _load_jobs()
-
-
-def get_job(job_id: str) -> dict | None:
-    for j in _load_jobs():
-        if j["id"] == job_id:
-            return j
-    return None
 
 
 def get_job_progress(job_id: str) -> dict:
@@ -66,53 +45,6 @@ def get_job_progress(job_id: str) -> dict:
         if job_id in _active_jobs:
             return _active_jobs[job_id].get("progress", {})
     return {}
-
-
-def create_job(
-    file_path: str,
-    file_name: str,
-    model: str,
-    start_row: int = 3,
-    photo_cols: str = "B,C,D",
-) -> str:
-    """Create a new job record and return its ID."""
-    job_id = str(uuid.uuid4())[:8]
-
-    job = {
-        "id": job_id,
-        "file_name": file_name,
-        "file_path": file_path,
-        "model": model,
-        "start_row": start_row,
-        "photo_cols": photo_cols,
-        "status": "queued",
-        "created_at": datetime.now().isoformat(),
-        "started_at": None,
-        "completed_at": None,
-        "total_outlets": 0,
-        "processed_outlets": 0,
-        "total_images": 0,
-        "brands_found": [],
-        "errors": 0,
-        "results_file": None,
-        "client_format_file": None,
-        "error_message": None,
-    }
-
-    jobs = _load_jobs()
-    jobs.append(job)
-    _save_jobs(jobs)
-    return job_id
-
-
-def _update_job(job_id: str, updates: dict):
-    """Update a job record in the JSON file."""
-    jobs = _load_jobs()
-    for j in jobs:
-        if j["id"] == job_id:
-            j.update(updates)
-            break
-    _save_jobs(jobs)
 
 
 def _save_partial_results(job_id: str, results: list[dict | None]):
@@ -474,6 +406,4 @@ def delete_job(job_id: str):
     # Clean up partial results file
     _cleanup_partial(job_id)
 
-    jobs = _load_jobs()
-    jobs = [j for j in jobs if j["id"] != job_id]
-    _save_jobs(jobs)
+    _db_delete_job(job_id)

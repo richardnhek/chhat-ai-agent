@@ -15,3 +15,6 @@ jobs.json
 *.tmp*
 logs/
 cost_log.json
+image_cache/
+chhat.db
+image_cache/

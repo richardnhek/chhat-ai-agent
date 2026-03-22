@@ -158,8 +158,16 @@ from corrections import (
 
 
 class TestCorrections:
-    def test_save_and_load_roundtrip(self, tmp_path):
-        path = str(tmp_path / "corrections.json")
+    @pytest.fixture(autouse=True)
+    def _use_temp_db(self, tmp_path, monkeypatch):
+        """Use a temporary SQLite database for each test."""
+        import database
+        db_path = tmp_path / "test.db"
+        monkeypatch.setattr(database, "DB_PATH", db_path)
+        # Reset the cached connection so it reconnects to the temp DB
+        monkeypatch.setattr(database, "_connection", None)
+
+    def test_save_and_load_roundtrip(self):
         correction = {
             "serial": "001",
             "image_url": "https://example.com/img.jpg",
@@ -168,59 +176,52 @@ class TestCorrections:
             "corrected_result": {"brands": ["MEVIUS", "ARA"], "skus": ["MEVIUS ORIGINAL", "ARA RED"]},
             "notes": "missed ARA pack",
         }
-        save_correction(correction, path=path)
-        loaded = load_corrections(path=path)
+        save_correction(correction)
+        loaded = load_corrections()
         assert len(loaded) == 1
         assert loaded[0]["serial"] == "001"
         assert loaded[0]["corrected_result"]["brands"] == ["MEVIUS", "ARA"]
         assert "id" in loaded[0]
         assert "timestamp" in loaded[0]
 
-    def test_load_corrections_empty_file(self, tmp_path):
-        path = str(tmp_path / "nonexistent.json")
-        result = load_corrections(path=path)
+    def test_load_corrections_empty_file(self):
+        result = load_corrections()
         assert result == []
 
-    def test_find_relevant_corrections_returns_results(self, tmp_path):
-        path = str(tmp_path / "corrections.json")
-        # Save a few corrections
+    def test_find_relevant_corrections_returns_results(self):
         for brand in ["MEVIUS", "ARA", "555"]:
             save_correction({
                 "serial": "001",
                 "ai_result": {"brands": [brand], "skus": []},
                 "corrected_result": {"brands": [brand, "ESSE"], "skus": []},
                 "notes": "",
-            }, path=path)
+            })
 
-        results = find_relevant_corrections(ai_brands=["MEVIUS"], limit=5, path=path)
+        results = find_relevant_corrections(ai_brands=["MEVIUS"], limit=5)
         assert len(results) > 0
-        # MEVIUS-related correction should be in results
         found_brands = set()
         for r in results:
             found_brands.update(r.get("ai_result", {}).get("brands", []))
         assert "MEVIUS" in found_brands
 
-    def test_find_relevant_corrections_without_ai_brands(self, tmp_path):
-        path = str(tmp_path / "corrections.json")
+    def test_find_relevant_corrections_without_ai_brands(self):
         save_correction({
             "serial": "001",
             "ai_result": {"brands": ["MEVIUS"], "skus": []},
             "corrected_result": {"brands": ["ARA"], "skus": []},
             "notes": "",
-        }, path=path)
-        # Cold start — no ai_brands, should return most recent
-        results = find_relevant_corrections(ai_brands=None, limit=5, path=path)
+        })
+        results = find_relevant_corrections(ai_brands=None, limit=5)
         assert len(results) == 1
 
-    def test_format_corrections_for_prompt_produces_valid_text(self, tmp_path):
-        path = str(tmp_path / "corrections.json")
+    def test_format_corrections_for_prompt_produces_valid_text(self):
         save_correction({
             "serial": "001",
             "ai_result": {"brands": ["MEVIUS"], "skus": ["MEVIUS ORIGINAL"]},
             "corrected_result": {"brands": ["ARA"], "skus": ["ARA RED"]},
             "notes": "AI confused brands",
-        }, path=path)
-        corrections = load_corrections(path=path)
+        })
+        corrections = load_corrections()
         text = format_corrections_for_prompt(corrections)
         assert "LEARNING FROM PAST CORRECTIONS" in text
         assert "MEVIUS" in text
@@ -231,48 +232,44 @@ class TestCorrections:
         text = format_corrections_for_prompt([])
         assert text == ""
 
-    def test_correction_type_brand_swap(self, tmp_path):
-        path = str(tmp_path / "corrections.json")
+    def test_correction_type_brand_swap(self):
         save_correction({
             "serial": "001",
             "ai_result": {"brands": ["MEVIUS"], "skus": []},
             "corrected_result": {"brands": ["ARA"], "skus": []},
             "notes": "",
-        }, path=path)
-        loaded = load_corrections(path=path)
+        })
+        loaded = load_corrections()
         assert loaded[0]["correction_type"] == "brand_swap"
 
-    def test_correction_type_brand_added(self, tmp_path):
-        path = str(tmp_path / "corrections.json")
+    def test_correction_type_brand_added(self):
         save_correction({
             "serial": "001",
             "ai_result": {"brands": ["MEVIUS"], "skus": []},
             "corrected_result": {"brands": ["MEVIUS", "ARA"], "skus": []},
             "notes": "",
-        }, path=path)
-        loaded = load_corrections(path=path)
+        })
+        loaded = load_corrections()
         assert loaded[0]["correction_type"] == "brand_added"
 
-    def test_correction_type_brand_removed(self, tmp_path):
-        path = str(tmp_path / "corrections.json")
+    def test_correction_type_brand_removed(self):
         save_correction({
             "serial": "001",
             "ai_result": {"brands": ["MEVIUS", "ARA"], "skus": []},
             "corrected_result": {"brands": ["MEVIUS"], "skus": []},
             "notes": "",
-        }, path=path)
-        loaded = load_corrections(path=path)
+        })
+        loaded = load_corrections()
         assert loaded[0]["correction_type"] == "brand_removed"
 
-    def test_correction_type_sku_corrected(self, tmp_path):
-        path = str(tmp_path / "corrections.json")
+    def test_correction_type_sku_corrected(self):
         save_correction({
             "serial": "001",
             "ai_result": {"brands": ["MEVIUS"], "skus": ["MEVIUS ORIGINAL"]},
             "corrected_result": {"brands": ["MEVIUS"], "skus": ["MEVIUS SKY BLUE"]},
             "notes": "",
-        }, path=path)
-        loaded = load_corrections(path=path)
+        })
+        loaded = load_corrections()
         assert loaded[0]["correction_type"] == "sku_corrected"
 
 
