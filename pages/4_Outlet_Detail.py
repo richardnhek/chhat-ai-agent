@@ -36,17 +36,121 @@ st.markdown("""
     .status-high { background: #d4edda; color: #155724; }
     .status-medium { background: #fff3cd; color: #856404; }
     .status-low { background: #f8d7da; color: #721c24; }
-    .factor-bar { height: 8px; border-radius: 4px; margin-top: 4px; }
-    .factor-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
-    .factor-name { font-size: 0.8rem; color: #495057; min-width: 160px; }
-    .factor-score { font-size: 0.8rem; font-weight: 600; min-width: 40px; text-align: right; }
+
+    /* Enhanced factor bars */
+    .factor-bar-container {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 0.8rem 1rem;
+        margin-bottom: 0.5rem;
+        border: 1px solid #e9ecef;
+    }
+    .factor-bar-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.4rem;
+    }
+    .factor-bar-name {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #495057;
+    }
+    .factor-bar-weight {
+        font-size: 0.7rem;
+        color: #adb5bd;
+        background: #e9ecef;
+        padding: 0.1rem 0.4rem;
+        border-radius: 4px;
+    }
+    .factor-bar-score {
+        font-size: 1rem;
+        font-weight: 700;
+        min-width: 40px;
+        text-align: right;
+    }
+    .factor-bar-track {
+        height: 10px;
+        border-radius: 5px;
+        background: #e9ecef;
+        overflow: hidden;
+        position: relative;
+    }
+    .factor-bar-fill {
+        height: 100%;
+        border-radius: 5px;
+        transition: width 0.5s ease;
+    }
+    .factor-bar-detail {
+        font-size: 0.75rem;
+        color: #868e96;
+        margin-top: 0.3rem;
+    }
+
+    /* Image comparison labels */
+    .img-label {
+        display: inline-block;
+        padding: 0.25rem 0.6rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.3rem;
+    }
+    .img-label-original {
+        background: #e9ecef;
+        color: #495057;
+    }
+    .img-label-enhanced {
+        background: #d4edda;
+        color: #155724;
+    }
+
     .image-detail-card { background: #ffffff; border: 1px solid #dee2e6; border-radius: 12px; padding: 1.2rem; margin-bottom: 1.5rem; }
     .notes-box { background: #f1f3f5; border-radius: 8px; padding: 0.8rem; font-size: 0.85rem; color: #495057; margin-top: 0.5rem; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+
+    /* Mobile responsive — tablet */
+    @media (max-width: 768px) {
+        .main-header { font-size: 1.5rem; }
+        .sub-header { font-size: 0.95rem; margin-bottom: 1rem; }
+        .metric-value { font-size: 1.2rem; }
+        .brand-tag { font-size: 0.7rem; padding: 0.15rem 0.5rem; }
+        .sku-tag { font-size: 0.7rem; padding: 0.15rem 0.4rem; }
+        .result-card { padding: 0.8rem; }
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+        }
+        [data-testid="stHorizontalBlock"] > div {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+    }
+
+    /* Mobile responsive — phone */
+    @media (max-width: 480px) {
+        .main-header { font-size: 1.2rem; }
+        .sub-header { font-size: 0.85rem; }
+        .metric-value { font-size: 1rem; }
+        .brand-tag { font-size: 0.65rem; padding: 0.1rem 0.4rem; }
+        .sku-tag { font-size: 0.65rem; padding: 0.1rem 0.3rem; }
+        .result-card { padding: 0.6rem; margin-bottom: 0.5rem; }
+        [data-testid="stMultiSelect"],
+        [data-testid="stDownloadButton"],
+        [data-testid="stDownloadButton"] > button {
+            width: 100% !important;
+        }
+        [data-testid="stDownloadButton"] > button {
+            min-width: 100% !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
+# ── CHHAT Branding ─────────────────────────────────────────────────────
+st.image("chhat-logo.png", width=120)
 st.markdown('<div class="main-header">Outlet Detail View</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Drill into per-outlet, per-image analysis results from completed jobs.</div>', unsafe_allow_html=True)
 
@@ -238,16 +342,19 @@ if confidence_factors:
         detail_str = " | ".join(detail_parts) if detail_parts else ""
 
         st.markdown(
-            f'<div class="factor-row">'
-            f'  <div class="factor-name">{info["label"]} <span style="color:#adb5bd; font-size:0.7rem;">({info["weight"]})</span></div>'
-            f'  <div style="flex:1;">'
-            f'    <div class="factor-bar" style="background:#e9ecef; position:relative;">'
-            f'      <div class="factor-bar" style="background:{bar_color}; width:{score}%; position:absolute; top:0; left:0;"></div>'
+            f'<div class="factor-bar-container">'
+            f'  <div class="factor-bar-header">'
+            f'    <div>'
+            f'      <span class="factor-bar-name">{info["label"]}</span>'
+            f'      <span class="factor-bar-weight">Weight: {info["weight"]}</span>'
             f'    </div>'
+            f'    <div class="factor-bar-score" style="color:{bar_color};">{score}/100</div>'
             f'  </div>'
-            f'  <div class="factor-score" style="color:{bar_color};">{score}</div>'
-            f'</div>'
-            + (f'<div style="font-size:0.75rem; color:#868e96; margin-left:168px; margin-top:-6px; margin-bottom:8px;">{detail_str}</div>' if detail_str else ""),
+            f'  <div class="factor-bar-track">'
+            f'    <div class="factor-bar-fill" style="background:{bar_color}; width:{score}%;"></div>'
+            f'  </div>'
+            + (f'  <div class="factor-bar-detail">{detail_str}</div>' if detail_str else "")
+            + f'</div>',
             unsafe_allow_html=True,
         )
 
@@ -285,11 +392,30 @@ if per_image:
 
             if was_enhanced:
                 enhanced_data = enhance_image(image_data)
+
+                # Blur score labels for comparison
+                if blur_score >= 100:
+                    blur_label = "Sharp"
+                elif blur_score >= 50:
+                    blur_label = "Moderate"
+                else:
+                    blur_label = "Blurry"
+
                 col_orig, col_enh = st.columns(2)
                 with col_orig:
-                    st.image(image_data, caption="Original", use_container_width=True)
+                    st.markdown(
+                        f'<span class="img-label img-label-original">Original</span>'
+                        f' <span style="font-size: 0.75rem; color: #6c757d;">Blur: {blur_score:.1f} ({blur_label})</span>',
+                        unsafe_allow_html=True,
+                    )
+                    st.image(image_data, use_container_width=True)
                 with col_enh:
-                    st.image(enhanced_data, caption="Enhanced", use_container_width=True)
+                    st.markdown(
+                        f'<span class="img-label img-label-enhanced">Enhanced</span>'
+                        f' <span style="font-size: 0.75rem; color: #155724;">Sharpened + denoised</span>',
+                        unsafe_allow_html=True,
+                    )
+                    st.image(enhanced_data, use_container_width=True)
             else:
                 st.image(image_data, caption=f"Image {img_idx + 1}", use_container_width=True)
         except Exception as e:
