@@ -22,13 +22,22 @@ from process import create_thumbnail, build_output, build_client_format, read_ra
 from enhancements import analyze_image_enhanced, compute_blur_score
 from rate_limiter import RateLimiter
 from cost_tracker import track_call
-from database import (
-    get_all_jobs,
-    get_job,
-    create_job,
-    _update_job,
-    delete_job as _db_delete_job,
-)
+if os.getenv("SUPABASE_URL"):
+    from supabase_db import (
+        get_all_jobs,
+        get_job,
+        create_job,
+        _update_job,
+        db_delete_job as _db_delete_job,
+    )
+else:
+    from database import (
+        get_all_jobs,
+        get_job,
+        create_job,
+        _update_job,
+        delete_job as _db_delete_job,
+    )
 
 load_dotenv()
 
