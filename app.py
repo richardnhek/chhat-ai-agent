@@ -282,92 +282,80 @@ if uploaded_file is not None:
             st.info(f"Using {len(recent_corrections)} past corrections to improve accuracy.")
 
         st.markdown("### Live Analysis")
-        progress_bar = st.progress(0, text="Starting...")
+        progress_bar = st.progress(0, text="Starting batch processing...")
         status_text = st.empty()
 
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from rate_limiter import RateLimiter
+        from process import _process_outlet
+
+        limiter = RateLimiter(model)
+        safe_workers = limiter.get_safe_workers()
+        status_text.markdown(f"**Processing {len(rows)} outlets in parallel** ({safe_workers} workers, {limiter.rpm} RPM)")
+
+        # Process ALL outlets in parallel using ThreadPoolExecutor
         all_results = []
-        analysis_details = []  # Store per-image details for correction UI
+        analysis_details = []
+        outlet_results = [None] * len(rows)
+        completed_count = 0
+
+        with ThreadPoolExecutor(max_workers=safe_workers) as executor:
+            future_to_idx = {}
+            for idx, row in enumerate(rows):
+                future = executor.submit(
+                    _process_outlet, row, model, api_keys, correction_context, limiter,
+                    enable_enhancement=enable_enhancement,
+                    enable_ocr=enable_ocr,
+                    enable_sku_refinement=enable_sku_refinement,
+                    cross_validation_models=cross_val_models if enable_cross_val else None,
+                )
+                future_to_idx[future] = idx
+
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                completed_count += 1
+                try:
+                    outlet_results[idx] = future.result()
+                except Exception as e:
+                    outlet_results[idx] = {
+                        "serial": rows[idx]["serial"], "brands": [], "skus": [],
+                        "thumbnails": [], "unidentified_packs": 0,
+                        "confidence": "low", "confidence_score": 0, "error": str(e),
+                    }
+                progress_bar.progress(completed_count / len(rows),
+                    text=f"Processed {completed_count}/{len(rows)} outlets...")
+
+        progress_bar.progress(1.0, text="Analysis complete!")
+        status_text.empty()
+
+        # Display results
         container = st.container()
-
         for i, row in enumerate(rows):
-            serial = row["serial"]
-            urls = row["urls"]
-            progress = (i + 1) / len(rows)
-            progress_bar.progress(progress, text=f"Processing outlet {i+1} of {len(rows)}...")
-            status_text.markdown(f"**Serial {serial}** — {len(urls)} image(s)")
+            result = outlet_results[i]
+            if result is None:
+                continue
+            serial = result["serial"]
+            brands_sorted = result.get("brands", [])
+            skus_sorted = result.get("skus", [])
+            thumbnails = result.get("thumbnails", [])
+            total_unidentified = result.get("unidentified_packs", 0)
+            error = result.get("error")
+            per_image_results = result.get("per_image", [])
 
-            all_brands = set()
-            all_skus = set()
-            thumbnails = []
-            total_unidentified = 0
-            worst_confidence = "high"
-            error = None
-            confidence_rank = {"low": 0, "medium": 1, "high": 2}
-            per_image_results = []
+            # Compute confidence
+            bpi = [r.get("brands", []) for r in per_image_results] if per_image_results else None
+            worst_confidence = result.get("confidence", "medium")
 
             with container:
                 with st.container():
-                    if urls:
-                        img_cols = st.columns(min(len(urls), 3))
+                    urls = row["urls"]
+                    if thumbnails:
+                        img_cols = st.columns(min(len(thumbnails), 3))
+                        for url_idx, thumb in enumerate(thumbnails[:3]):
+                            with img_cols[url_idx]:
+                                st.image(thumb, caption=f"Serial {serial} - Image {url_idx+1}", use_container_width=True)
 
-                    for url_idx, url in enumerate(urls):
-                        try:
-                            image_data, media_type = fetch_image(url)
-                            thumbnails.append(create_thumbnail(image_data))
-
-                            if url_idx < 3:
-                                with img_cols[url_idx]:
-                                    st.image(image_data, caption=f"Serial {serial} - Image {url_idx+1}", use_container_width=True)
-
-                            with st.spinner(f"Analyzing image {url_idx+1}..."):
-                                analysis = analyze_image_enhanced(
-                                    image_data, media_type,
-                                    model=model, api_keys=api_keys,
-                                    correction_context=correction_context,
-                                    enable_enhancement=enable_enhancement,
-                                    enable_ocr=enable_ocr,
-                                    enable_sku_refinement=enable_sku_refinement,
-                                    enable_cross_validation=enable_cross_val,
-                                    cross_validation_models=cross_val_models if enable_cross_val else None,
-                                )
-
-                            if "error" not in analysis:
-                                img_brands = []
-                                img_skus = []
-                                for entry in analysis.get("brands_found", []):
-                                    brand = entry.get("brand", "")
-                                    if brand in BRANDS_AND_SKUS:
-                                        all_brands.add(brand)
-                                        img_brands.append(brand)
-                                    for sku in entry.get("skus", []):
-                                        if sku:
-                                            all_skus.add(sku)
-                                            img_skus.append(sku)
-                                total_unidentified += analysis.get("unidentified_packs", 0)
-                                img_conf = analysis.get("confidence", "medium")
-                                if confidence_rank.get(img_conf, 1) < confidence_rank.get(worst_confidence, 2):
-                                    worst_confidence = img_conf
-                                per_image_results.append({
-                                    "url": url,
-                                    "brands": img_brands,
-                                    "skus": img_skus,
-                                    "confidence": img_conf,
-                                    "unidentified": analysis.get("unidentified_packs", 0),
-                                })
-                            else:
-                                error = analysis.get("error")
-
-                        except Exception as e:
-                            error = str(e)
-
-                        if url_idx < len(urls) - 1:
-                            time.sleep(delay)
-
-                    brands_sorted = sorted(all_brands)
-                    skus_sorted = sorted(all_skus)
-
-                    # Compute multi-factor confidence
-                    bpi = [r.get("brands", []) for r in per_image_results] if per_image_results else None
+                    # Use results from parallel processing
                     conf_result = compute_confidence(
                         ai_confidence=worst_confidence,
                         brands_found=brands_sorted,
