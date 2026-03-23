@@ -5,10 +5,11 @@ Architecture:
   1. Image QA (blur check, reject garbage)
   2. RF-DETR Detection (find all packs, return crops)
   3. For each crop:
-     a. PaddleOCR (read brand/SKU text)
-     b. Visual classification (color, shape analysis)
-     c. If OCR confident → accept
-     d. If OCR uncertain → send crop to Gemini arbitrator
+     a. Signal 1: PaddleOCR (read brand/SKU text)
+     b. Signal 2: Embedding search (visual similarity against 238 reference images)
+     c. If OCR + embedding agree → high confidence, accept
+     d. If OCR confident alone → accept
+     e. If uncertain or disagreement → send crop to Gemini arbitrator
   4. Fusion (combine all signals, resolve conflicts)
   5. Confidence scoring
 """
@@ -25,6 +26,7 @@ from detector import detect_packs, crop_image_region
 from ocr_engine import extract_and_match
 from enhancements import enhance_image, compute_blur_score
 from confidence import compute_confidence
+from embedding_search import find_matching_sku
 from rate_limiter import RateLimiter
 from logger import get_logger
 
@@ -32,6 +34,9 @@ logger = get_logger()
 
 # Threshold: if OCR match confidence is below this, escalate to Gemini
 OCR_CONFIDENCE_THRESHOLD = 0.75
+
+# Threshold: embedding similarity above this is considered a strong visual match
+EMBEDDING_CONFIDENCE_THRESHOLD = 0.85
 
 # Threshold: if blur score is below this, flag as low quality
 BLUR_THRESHOLD = 50.0
@@ -100,69 +105,154 @@ def _process_single_crop(
     limiter: RateLimiter | None = None,
 ) -> dict:
     """
-    Process a single crop through OCR → optional Gemini arbitrator.
-    """
-    # Step 1: OCR
-    ocr_result = extract_and_match(crop_data)
+    Process a single crop through OCR + Embedding Search → optional Gemini arbitrator.
 
-    if ocr_result["brand"] and ocr_result["match_confidence"] >= OCR_CONFIDENCE_THRESHOLD:
-        # OCR is confident — use it directly, skip Gemini
+    Signal fusion logic:
+      - OCR confident + embedding agrees → high confidence, skip Gemini
+      - OCR confident alone → accept (medium-high confidence)
+      - Embedding confident + OCR weak → accept embedding (medium confidence)
+      - Both weak or disagree → escalate to Gemini
+    """
+    # ── Signal 1: OCR ────────────────────────────────────────────────
+    ocr_result = extract_and_match(crop_data)
+    ocr_brand = ocr_result.get("brand")
+    ocr_sku = ocr_result.get("sku")
+    ocr_conf = ocr_result.get("match_confidence", 0)
+
+    # ── Signal 2: Embedding search ───────────────────────────────────
+    try:
+        emb_matches = find_matching_sku(crop_data, top_k=3)
+        emb_top = emb_matches[0] if emb_matches else None
+        emb_brand = emb_top["brand"] if emb_top else None
+        emb_sku = emb_top["sku"] if emb_top else None
+        emb_sim = emb_top["similarity"] if emb_top else 0
+        emb_ref = emb_top["reference_image"] if emb_top else ""
+    except Exception as e:
+        logger.warning(f"Embedding search failed: {e}")
+        emb_top = None
+        emb_brand = None
+        emb_sku = None
+        emb_sim = 0
+        emb_ref = ""
+
+    # ── Fusion logic ─────────────────────────────────────────────────
+
+    # Case 1: OCR confident + embedding agrees → high confidence
+    if (ocr_brand and ocr_conf >= OCR_CONFIDENCE_THRESHOLD
+            and emb_brand and emb_sim >= EMBEDDING_CONFIDENCE_THRESHOLD
+            and ocr_brand == emb_brand):
+        # Both signals agree — very high confidence, skip Gemini
+        chosen_sku = ocr_sku or emb_sku
         return {
-            "brand": ocr_result["brand"],
-            "sku": ocr_result["sku"],
-            "confidence": "high" if ocr_result["match_confidence"] > 0.85 else "medium",
-            "notes": f"OCR detected: {', '.join(ocr_result['ocr_texts'][:5])}",
-            "source": "ocr",
-            "ocr_confidence": ocr_result["match_confidence"],
+            "brand": ocr_brand,
+            "sku": chosen_sku,
+            "confidence": "high",
+            "notes": (f"OCR+Embedding agree. OCR: {', '.join(ocr_result['ocr_texts'][:3])}. "
+                      f"Embedding: {emb_ref} (sim={emb_sim:.3f})"),
+            "source": "ocr+embedding",
+            "ocr_confidence": ocr_conf,
+            "embedding_similarity": emb_sim,
         }
 
-    # Step 2: OCR uncertain — escalate to Gemini arbitrator
+    # Case 2: OCR confident alone → accept
+    if ocr_brand and ocr_conf >= OCR_CONFIDENCE_THRESHOLD:
+        return {
+            "brand": ocr_brand,
+            "sku": ocr_sku,
+            "confidence": "high" if ocr_conf > 0.85 else "medium",
+            "notes": (f"OCR detected: {', '.join(ocr_result['ocr_texts'][:5])}. "
+                      f"Embedding top: {emb_brand} (sim={emb_sim:.3f})"),
+            "source": "ocr",
+            "ocr_confidence": ocr_conf,
+            "embedding_similarity": emb_sim,
+        }
+
+    # Case 3: Embedding confident + OCR weak → use embedding
+    if emb_brand and emb_sim >= EMBEDDING_CONFIDENCE_THRESHOLD and not ocr_brand:
+        return {
+            "brand": emb_brand,
+            "sku": emb_sku,
+            "confidence": "medium",
+            "notes": (f"Embedding match: {emb_ref} (sim={emb_sim:.3f}). "
+                      f"OCR had no match."),
+            "source": "embedding",
+            "ocr_confidence": ocr_conf,
+            "embedding_similarity": emb_sim,
+        }
+
+    # Case 4: Both have results but disagree, or both weak → escalate to Gemini
     if limiter:
         limiter.wait()
 
     gemini_result = _classify_crop_with_gemini(crop_data, media_type, model, api_keys)
 
-    # Fuse OCR + Gemini results
-    if gemini_result["brand"] and ocr_result["brand"]:
-        # Both have opinions — prefer Gemini but note OCR's input
-        if gemini_result["brand"] == ocr_result["brand"]:
-            # Agreement — high confidence
-            return {
-                "brand": gemini_result["brand"],
-                "sku": gemini_result["sku"] or ocr_result["sku"],
-                "confidence": "high",
-                "notes": f"OCR+Gemini agree. OCR: {ocr_result['ocr_texts'][:3]}",
-                "source": "ocr+gemini",
-                "ocr_confidence": ocr_result["match_confidence"],
-            }
+    # Build disagreement context for notes
+    signal_notes = []
+    if ocr_brand:
+        signal_notes.append(f"OCR={ocr_brand}(conf={ocr_conf:.2f})")
+    if emb_brand:
+        signal_notes.append(f"Embedding={emb_brand}(sim={emb_sim:.3f})")
+    signal_summary = ", ".join(signal_notes) if signal_notes else "no pre-signals"
+
+    # Fuse all three signals
+    if gemini_result["brand"]:
+        # Check how many signals agree with Gemini
+        agreements = []
+        if ocr_brand == gemini_result["brand"]:
+            agreements.append("OCR")
+        if emb_brand == gemini_result["brand"]:
+            agreements.append("Embedding")
+
+        if len(agreements) >= 2:
+            confidence = "high"
+            source = "ocr+embedding+gemini"
+        elif len(agreements) == 1:
+            confidence = "high" if agreements[0] == "Embedding" and emb_sim > 0.8 else "medium"
+            source = f"{agreements[0].lower()}+gemini"
         else:
-            # Disagreement — use Gemini but lower confidence
-            return {
-                "brand": gemini_result["brand"],
-                "sku": gemini_result["sku"],
-                "confidence": "medium",
-                "notes": f"OCR said {ocr_result['brand']}, Gemini said {gemini_result['brand']}. Using Gemini.",
-                "source": "gemini_override",
-                "ocr_confidence": ocr_result["match_confidence"],
-            }
-    elif gemini_result["brand"]:
-        return gemini_result
-    elif ocr_result["brand"]:
+            confidence = "medium"
+            source = "gemini_arbitrator"
+
         return {
-            "brand": ocr_result["brand"],
-            "sku": ocr_result["sku"],
+            "brand": gemini_result["brand"],
+            "sku": gemini_result["sku"] or ocr_sku or emb_sku,
+            "confidence": confidence,
+            "notes": f"Gemini arbitrated. Pre-signals: {signal_summary}. Agrees with: {agreements or 'neither'}.",
+            "source": source,
+            "ocr_confidence": ocr_conf,
+            "embedding_similarity": emb_sim,
+        }
+
+    # Gemini also failed — use best available signal
+    if ocr_brand and ocr_conf > (emb_sim if emb_brand else 0):
+        return {
+            "brand": ocr_brand,
+            "sku": ocr_sku,
             "confidence": "low",
             "notes": f"Only OCR detected (low confidence): {ocr_result['ocr_texts'][:3]}",
             "source": "ocr_low",
-            "ocr_confidence": ocr_result["match_confidence"],
+            "ocr_confidence": ocr_conf,
+            "embedding_similarity": emb_sim,
+        }
+    elif emb_brand and emb_sim > 0.6:
+        return {
+            "brand": emb_brand,
+            "sku": emb_sku,
+            "confidence": "low",
+            "notes": f"Only embedding match (weak): {emb_ref} (sim={emb_sim:.3f})",
+            "source": "embedding_low",
+            "ocr_confidence": ocr_conf,
+            "embedding_similarity": emb_sim,
         }
 
     return {
         "brand": None,
         "sku": None,
         "confidence": "low",
-        "notes": "Neither OCR nor Gemini could identify this pack",
+        "notes": "No signal could identify this pack (OCR, Embedding, Gemini all failed)",
         "source": "unidentified",
+        "ocr_confidence": ocr_conf,
+        "embedding_similarity": emb_sim,
     }
 
 
@@ -219,6 +309,8 @@ def analyze_hybrid(
     crop_results = []
     gemini_calls = 0
     ocr_only = 0
+    embedding_resolved = 0
+    ocr_embedding_agree = 0
     unidentified = 0
 
     for det in detections:
@@ -237,11 +329,17 @@ def analyze_hybrid(
             if crop_result["sku"]:
                 all_skus.add(crop_result["sku"])
 
-        if crop_result["source"] in ("gemini_arbitrator", "gemini_override", "ocr+gemini"):
+        source = crop_result["source"]
+        if source in ("gemini_arbitrator", "gemini_override", "ocr+gemini",
+                       "ocr+embedding+gemini", "ocr+gemini", "embedding+gemini"):
             gemini_calls += 1
-        elif crop_result["source"] == "ocr":
+        if source == "ocr":
             ocr_only += 1
-        else:
+        elif source == "ocr+embedding":
+            ocr_embedding_agree += 1
+        elif source == "embedding":
+            embedding_resolved += 1
+        elif source == "unidentified":
             unidentified += 1
 
     # ── Step 4: Build result ─────────────────────────────────────────
@@ -282,7 +380,8 @@ def analyze_hybrid(
         "confidence": overall_confidence,
         "notes": (
             f"Hybrid pipeline: {len(detections)} packs detected, "
-            f"{ocr_only} resolved by OCR, {gemini_calls} escalated to Gemini, "
+            f"{ocr_only} resolved by OCR, {ocr_embedding_agree} by OCR+Embedding, "
+            f"{embedding_resolved} by Embedding alone, {gemini_calls} escalated to Gemini, "
             f"{unidentified} unidentified. Processed in {elapsed:.1f}s."
         ),
         "pipeline": "hybrid",
@@ -290,6 +389,8 @@ def analyze_hybrid(
         "stats": {
             "total_packs": len(detections),
             "ocr_resolved": ocr_only,
+            "ocr_embedding_agree": ocr_embedding_agree,
+            "embedding_resolved": embedding_resolved,
             "gemini_escalated": gemini_calls,
             "unidentified": unidentified,
             "processing_time": round(elapsed, 1),

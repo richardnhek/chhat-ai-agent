@@ -24,3 +24,5 @@ reference_images/
 training_data/images/
 training_data/datasets/
 Photo_Evidence_Gallery_KH.pdf
+reference_images/embeddings.npz
+training_data/synthetic/
