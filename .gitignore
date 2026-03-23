@@ -18,3 +18,5 @@ cost_log.json
 image_cache/
 chhat.db
 image_cache/
+rf-detr-base.pth
+*.pth
