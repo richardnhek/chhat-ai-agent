@@ -20,3 +20,7 @@ chhat.db
 image_cache/
 rf-detr-base.pth
 *.pth
+reference_images/
+training_data/images/
+training_data/datasets/
+Photo_Evidence_Gallery_KH.pdf
