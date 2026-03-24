@@ -1,0 +1,70 @@
+{
+  "images": [
+    {
+      "id": 1,
+      "file_name": "test_image_001.jpg",
+      "width": 1050,
+      "height": 1477
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        22,
+        290,
+        94,
+        44
+      ],
+      "area": 4136,
+      "iscrowd": 0
+    },
+    {
+      "id": 2,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        281,
+        444,
+        72,
+        39
+      ],
+      "area": 2808,
+      "iscrowd": 0
+    },
+    {
+      "id": 3,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        364,
+        513,
+        113,
+        35
+      ],
+      "area": 3955,
+      "iscrowd": 0
+    },
+    {
+      "id": 4,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        927,
+        538,
+        71,
+        33
+      ],
+      "area": 2343,
+      "iscrowd": 0
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "cigarette_pack"
+    }
+  ]
+}

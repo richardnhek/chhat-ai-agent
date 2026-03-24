@@ -215,7 +215,7 @@ with st.sidebar:
 st.markdown("### Select Image")
 source_tab = st.radio(
     "Image source",
-    ["Upload Image", "From Completed Job"],
+    ["Survey Images (33)", "Upload Image", "From Completed Job"],
     horizontal=True,
     label_visibility="collapsed",
 )
@@ -223,7 +223,32 @@ source_tab = st.radio(
 image: Image.Image | None = None
 image_source_name: str = ""
 
-if source_tab == "Upload Image":
+if source_tab == "Survey Images (33)":
+    survey_dir = Path("survey_images")
+    survey_images = sorted(survey_dir.glob("*.jpg"))
+    if survey_images:
+        img_idx = st.slider(f"Image ({len(survey_images)} total)", 0, len(survey_images) - 1, 0, key="survey_slider")
+        img_path = survey_images[img_idx]
+        image = Image.open(img_path).convert("RGB")
+        image_source_name = img_path.name
+        st.caption(f"**{img_path.name}** — {image.size[0]}x{image.size[1]}px")
+
+        # Show Gemini's auto-annotations if available
+        gemini_ann_path = survey_dir / "gemini_annotations.json"
+        if gemini_ann_path.exists():
+            with open(gemini_ann_path) as _f:
+                _all_ann = json.load(_f)
+            _matching = [a for a in _all_ann if a["image"] == img_path.name]
+            if _matching and _matching[0].get("packs"):
+                _packs = _matching[0]["packs"]
+                _brands = [p["brand"] for p in _packs if p.get("brand")]
+                st.info(f"Gemini auto-detected: {len(_packs)} packs — {', '.join(set(_brands)) or 'none'}")
+            elif _matching:
+                st.warning("Gemini found 0 packs in this image. Draw rectangles around any cigarette boxes you see.")
+    else:
+        st.info("No survey images found. Download them first from the Excel file.")
+
+elif source_tab == "Upload Image":
     uploaded = st.file_uploader(
         "Upload an image to annotate",
         type=["jpg", "jpeg", "png", "webp"],
