@@ -51,6 +51,10 @@ def merge_datasets(output_dir: str = "training_data/merged") -> dict:
         "training_data/cigarette-box",
         "training_data/cigarette-pack-detection",
         "training_data/synthetic",
+        "training_data/roboflow_annotated",
+        "training_data/gemini_boxes",
+        "training_data/auto_labeled",
+        "training_data/video_frames",
     ]
 
     total_images = 0
@@ -126,7 +130,7 @@ def merge_datasets(output_dir: str = "training_data/merged") -> dict:
                     "image_id": old_img_id_map[old_img],
                     "category_id": 1,  # All → cigarette_pack
                     "bbox": ann["bbox"],
-                    "area": ann.get("area", ann["bbox"][2] * ann["bbox"][3]),
+                    "area": ann.get("area", float(ann["bbox"][2]) * float(ann["bbox"][3])),
                     "iscrowd": ann.get("iscrowd", 0),
                 }
 
