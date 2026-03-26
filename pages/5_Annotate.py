@@ -6,6 +6,7 @@ in COCO format plus corrections for the self-improving pipeline.
 """
 
 import json
+import io
 import os
 import uuid
 import hashlib
@@ -210,314 +211,393 @@ with st.sidebar:
             )
 
 
-# ── Image Source Selection ────────────────────────────────────────────────
+# ── Image Loading — Simple & Direct ──────────────────────────────────────
 
-st.markdown("### Select Image")
-source_tab = st.radio(
-    "Image source",
-    ["Survey Images (33)", "Upload Image", "From Completed Job"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
+survey_dir = Path("survey_images")
+survey_images = sorted(survey_dir.glob("*.jpg")) if survey_dir.exists() else []
 
 image: Image.Image | None = None
 image_source_name: str = ""
 
-if source_tab == "Survey Images (33)":
-    survey_dir = Path("survey_images")
-    survey_images = sorted(survey_dir.glob("*.jpg"))
-    if survey_images:
-        img_idx = st.slider(f"Image ({len(survey_images)} total)", 0, len(survey_images) - 1, 0, key="survey_slider")
-        img_path = survey_images[img_idx]
+if survey_images:
+    st.markdown(f"### Select Image ({len(survey_images)} available)")
+    img_idx = st.number_input("Image #", min_value=1, max_value=len(survey_images), value=1, step=1, key="img_num") - 1
+    img_path = survey_images[img_idx]
+    image_source_name = img_path.name
+
+    try:
         image = Image.open(img_path).convert("RGB")
-        image_source_name = img_path.name
-        st.caption(f"**{img_path.name}** — {image.size[0]}x{image.size[1]}px")
+        st.success(f"**{img_path.name}** — {image.size[0]}x{image.size[1]}px")
+    except Exception as e:
+        st.error(f"Failed to load image: {e}")
 
-        # Show Gemini's auto-annotations if available
-        gemini_ann_path = survey_dir / "gemini_annotations.json"
-        if gemini_ann_path.exists():
-            with open(gemini_ann_path) as _f:
-                _all_ann = json.load(_f)
-            _matching = [a for a in _all_ann if a["image"] == img_path.name]
-            if _matching and _matching[0].get("packs"):
-                _packs = _matching[0]["packs"]
-                _brands = [p["brand"] for p in _packs if p.get("brand")]
-                st.info(f"Gemini auto-detected: {len(_packs)} packs — {', '.join(set(_brands)) or 'none'}")
-            elif _matching:
-                st.warning("Gemini found 0 packs in this image. Draw rectangles around any cigarette boxes you see.")
-    else:
-        st.info("No survey images found. Download them first from the Excel file.")
-
-elif source_tab == "Upload Image":
-    uploaded = st.file_uploader(
-        "Upload an image to annotate",
-        type=["jpg", "jpeg", "png", "webp"],
-        key="annotate_upload",
-    )
+    # Also allow upload
+    with st.expander("Or upload a different image"):
+        uploaded = st.file_uploader("Upload image", type=["jpg", "jpeg", "png", "webp"], key="ann_upload")
+        if uploaded:
+            image = Image.open(uploaded).convert("RGB")
+            image_source_name = uploaded.name
+else:
+    st.warning("No images in survey_images/ folder.")
+    uploaded = st.file_uploader("Upload an image to annotate", type=["jpg", "jpeg", "png", "webp"], key="ann_upload")
     if uploaded:
         image = Image.open(uploaded).convert("RGB")
         image_source_name = uploaded.name
 
-elif source_tab == "From Completed Job":
-    job_images = _load_job_images()
-    if not job_images:
-        st.info("No completed jobs with images found. Upload an image instead, or run an analysis job first.")
-    else:
-        # Build selection options
-        options = [f"[{img['serial']}] {img['file_name']} — {img['url'][:60]}..." for img in job_images]
-        selected_idx = st.selectbox(
-            "Select an image from completed jobs",
-            range(len(options)),
-            format_func=lambda i: options[i],
-            key="job_image_select",
-        )
-        if selected_idx is not None:
-            img_info = job_images[selected_idx]
-            img_bytes = _fetch_image_bytes(img_info["url"])
-            if img_bytes:
-                import io as _io
-                image = Image.open(_io.BytesIO(img_bytes)).convert("RGB")
-                image_source_name = f"serial_{img_info['serial']}_{img_info['job_id'][:8]}.jpg"
-            else:
-                st.error("Failed to fetch the image. The URL may have expired.")
-
 if image is None:
+    st.info("No image loaded. Check survey_images/ folder or upload an image.")
     st.stop()
 
-# ── Canvas ────────────────────────────────────────────────────────────────
+# ── Image Display with Drawing Canvas ─────────────────────────────────────
 st.markdown("---")
-st.markdown("### Draw Bounding Boxes")
-st.caption("Use the rectangle tool to draw boxes around cigarette packs the AI missed. "
-           "You can draw multiple boxes.")
 
-# Scale image to fit canvas while keeping aspect ratio
-MAX_CANVAS_WIDTH = 900
+import base64 as _b64
+import streamlit.components.v1 as components
+
 img_w, img_h = image.size
-scale = min(MAX_CANVAS_WIDTH / img_w, 1.0)
-canvas_w = int(img_w * scale)
-canvas_h = int(img_h * scale)
+max_display_w = 900
+scale = min(max_display_w / img_w, 1.0)
+display_w = int(img_w * scale)
+display_h = int(img_h * scale)
 
-display_image = image.resize((canvas_w, canvas_h), Image.LANCZOS)
+# Convert image to base64 for embedding in HTML
+_buf = io.BytesIO()
+image.resize((display_w, display_h), Image.LANCZOS).save(_buf, format="JPEG", quality=85)
+img_b64 = _b64.b64encode(_buf.getvalue()).decode()
 
-col_canvas, col_controls = st.columns([3, 1])
+# Build interactive HTML canvas for drawing rectangles
+brand_list_js = json.dumps(sorted(BRANDS_AND_SKUS.keys()))
+sku_map_js = json.dumps({k: v for k, v in BRANDS_AND_SKUS.items()})
 
-with col_controls:
-    st.markdown("**Drawing Tools**")
-    drawing_mode = st.radio(
-        "Mode",
-        ["rect", "circle"],
-        format_func=lambda x: "Rectangle" if x == "rect" else "Circle",
-        key="draw_mode",
-    )
-    stroke_color = st.color_picker("Box color", "#FF0000", key="stroke_color")
-    stroke_width = st.slider("Line width", 1, 6, 3, key="stroke_width")
-    fill_opacity = st.slider("Fill opacity", 0, 100, 30, key="fill_opacity")
-    fill_color = f"rgba({int(stroke_color[1:3], 16)}, {int(stroke_color[3:5], 16)}, {int(stroke_color[5:7], 16)}, {fill_opacity / 100})"
+canvas_html = f"""
+<style>
+  * {{ box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }}
+  .container {{ display: flex; gap: 16px; }}
+  .canvas-wrap {{ flex: 1; }}
+  .panel {{ width: 320px; max-height: {display_h + 60}px; overflow-y: auto; padding: 12px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6; }}
+  canvas {{ cursor: crosshair; border: 2px solid #4472C4; border-radius: 6px; display: block; }}
+  .box-entry {{ background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px; margin-bottom: 8px; }}
+  .box-entry.selected {{ border-color: #4472C4; box-shadow: 0 0 0 2px rgba(68,114,196,0.3); }}
+  .box-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }}
+  .box-num {{ font-weight: 700; color: #1a1a2e; }}
+  .box-size {{ font-size: 11px; color: #999; }}
+  .del-btn {{ background: #ff5252; color: white; border: none; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 12px; }}
+  select, input {{ width: 100%; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 4px; font-size: 13px; }}
+  label {{ font-size: 11px; color: #666; font-weight: 600; text-transform: uppercase; display: block; margin-bottom: 2px; }}
+  .handle {{ position: absolute; width: 10px; height: 10px; background: white; border: 2px solid #4472C4; cursor: pointer; }}
+  .toolbar {{ display: flex; gap: 8px; margin-top: 8px; }}
+  .toolbar button {{ padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }}
+  .btn-undo {{ background: #ff9800; color: white; }}
+  .btn-clear {{ background: #757575; color: white; }}
+  .btn-copy {{ background: #4472C4; color: white; }}
+  .count {{ margin-top: 8px; font-size: 13px; color: #333; }}
+  #copyResult {{ display: none; margin-top: 6px; padding: 8px; background: #e8f5e9; border-radius: 4px; font-size: 12px; color: #2e7d32; }}
+</style>
 
-with col_canvas:
-    canvas_result = st_canvas(
-        fill_color=fill_color,
-        stroke_width=stroke_width,
-        stroke_color=stroke_color,
-        background_image=display_image,
-        drawing_mode=drawing_mode,
-        height=canvas_h,
-        width=canvas_w,
-        key="annotation_canvas",
-    )
+<div class="container">
+  <div class="canvas-wrap">
+    <canvas id="c" width="{display_w}" height="{display_h}"></canvas>
+    <div class="toolbar">
+      <button class="btn-undo" onclick="undo()">Undo</button>
+      <button class="btn-clear" onclick="clearAll()">Clear All</button>
+      <button class="btn-copy" onclick="copyData()">Copy Annotation Data</button>
+    </div>
+    <div class="count">Boxes: <strong id="cnt">0</strong></div>
+    <div id="copyResult"></div>
+  </div>
+  <div class="panel" id="panel">
+    <div style="font-weight:700;margin-bottom:8px;color:#1a1a2e;">Annotations</div>
+    <div id="entries"></div>
+  </div>
+</div>
 
-# ── Process drawn objects ─────────────────────────────────────────────────
+<script>
+const brands = {brand_list_js};
+const skuMap = {sku_map_js};
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const img = new Image();
+img.src = 'data:image/jpeg;base64,{img_b64}';
+const S = {scale};
 
-if canvas_result.json_data is not None:
-    objects = canvas_result.json_data.get("objects", [])
+let boxes = [];
+let drawing = false;
+let dragging = null; // {{boxIdx, handle}} for resize
+let sx, sy;
+let selectedBox = -1;
+
+const HANDLE_SIZE = 8;
+const HANDLES = ['tl','tr','bl','br','t','b','l','r']; // corners + edges
+
+img.onload = () => redraw(true);
+
+function getHandles(b) {{
+  return {{
+    tl: [b.x, b.y], tr: [b.x+b.w, b.y],
+    bl: [b.x, b.y+b.h], br: [b.x+b.w, b.y+b.h],
+    t: [b.x+b.w/2, b.y], b: [b.x+b.w/2, b.y+b.h],
+    l: [b.x, b.y+b.h/2], r: [b.x+b.w, b.y+b.h/2],
+  }};
+}}
+
+function hitHandle(mx, my) {{
+  for (let i = boxes.length-1; i >= 0; i--) {{
+    const hs = getHandles(boxes[i]);
+    for (const [name, [hx,hy]] of Object.entries(hs)) {{
+      if (Math.abs(mx-hx) < HANDLE_SIZE && Math.abs(my-hy) < HANDLE_SIZE)
+        return {{boxIdx: i, handle: name}};
+    }}
+  }}
+  return null;
+}}
+
+let lastPanelCount = -1;
+
+function redrawCanvas() {{
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, {display_w}, {display_h});
+  boxes.forEach((b, i) => {{
+    const sel = (i === selectedBox);
+    ctx.strokeStyle = sel ? '#4472C4' : '#FF0000';
+    ctx.lineWidth = sel ? 3 : 2;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = sel ? 'rgba(68,114,196,0.15)' : 'rgba(255,0,0,0.1)';
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = sel ? '#4472C4' : '#FF0000';
+    ctx.font = 'bold 13px Arial';
+    const label = b.brand || ('#'+(i+1));
+    ctx.fillText(label, b.x+3, b.y-4);
+    if (sel) {{
+      const hs = getHandles(b);
+      Object.values(hs).forEach(([hx,hy]) => {{
+        ctx.fillStyle = 'white';
+        ctx.strokeStyle = '#4472C4';
+        ctx.lineWidth = 2;
+        ctx.fillRect(hx-4, hy-4, 8, 8);
+        ctx.strokeRect(hx-4, hy-4, 8, 8);
+      }});
+    }}
+  }});
+  document.getElementById('cnt').textContent = boxes.length;
+}}
+
+function redraw(rebuildPanel) {{
+  redrawCanvas();
+  // Only rebuild panel when boxes are added/removed, NOT during drawing/resizing
+  if (rebuildPanel || boxes.length !== lastPanelCount) {{
+    lastPanelCount = boxes.length;
+    updatePanel();
+  }}
+}}
+
+function updatePanel() {{
+  const el = document.getElementById('entries');
+  let html = '';
+  boxes.forEach((b, i) => {{
+    const rb = {{x:Math.round(b.x/S), y:Math.round(b.y/S), w:Math.round(b.w/S), h:Math.round(b.h/S)}};
+    const sel = (i === selectedBox) ? 'selected' : '';
+    const brandOpts = brands.map(br => '<option value="'+br+'"'+(b.brand===br?' selected':'')+'>'+br+'</option>').join('');
+    const skus = skuMap[b.brand] || [];
+    const skuOpts = skus.map(s => '<option value="'+s+'"'+(b.sku===s?' selected':'')+'>'+s+'</option>').join('');
+    const typeOpts = ['Individual Pack','Carton (10+ packs)','Sleeve/Bundle','Open Pack'].map(t => '<option'+(b.packType===t?' selected':'')+'>'+t+'</option>').join('');
+    const condOpts = ['Clear/Visible','Behind Dirty Glass','Partially Obscured','Upside Down','Sideways','Stacked/Overlapping','Blurry','Reflected/Glare','Far Away/Small'].map(c => '<option'+(b.condition===c?' selected':'')+'>'+c+'</option>').join('');
+    const posOpts = ['On Shelf','In Display Case','On Counter','Behind Counter','Hanging','On Floor','On Top of Other Products'].map(p => '<option'+(b.position===p?' selected':'')+'>'+p+'</option>').join('');
+
+    html += '<div class="box-entry '+sel+'" onclick="selectBox('+i+')">';
+    html += '<div class="box-header"><span class="box-num">Box #'+(i+1)+'</span><span class="box-size">'+rb.w+'x'+rb.h+'px</span><button class="del-btn" onclick="event.stopPropagation();delBox('+i+')">×</button></div>';
+    html += '<label>Brand</label><select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" onchange="setBoxProp('+i+',\\'brand\\',this.value);updateSkus('+i+',this.value)"><option value="">-- Select --</option>'+brandOpts+'</select>';
+    html += '<div id="skuWrap'+i+'"><label>SKU</label><select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" onchange="setBoxProp('+i+',\\'sku\\',this.value)"><option value="">-- Select --</option>'+skuOpts+'</select></div>';
+    html += '<label>Pack Type</label><select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" onchange="setBoxProp('+i+',\\'packType\\',this.value)"><option value="">-- Select --</option>'+typeOpts+'</select>';
+    html += '<label>Condition</label><select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" onchange="setBoxProp('+i+',\\'condition\\',this.value)"><option value="">-- Select --</option>'+condOpts+'</select>';
+    html += '<label>Position</label><select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" onchange="setBoxProp('+i+',\\'position\\',this.value)"><option value="">-- Select --</option>'+posOpts+'</select>';
+    html += '</div>';
+  }});
+  if (!boxes.length) html = '<div style="color:#999;font-size:13px;text-align:center;padding:20px;">Draw rectangles on the image to start annotating</div>';
+  el.innerHTML = html;
+}}
+
+function setBoxProp(i, prop, val) {{
+  boxes[i][prop] = val;
+  if (prop === 'brand') redrawCanvas();
+}}
+
+function updateSkus(i, brand) {{
+  const skus = skuMap[brand] || [];
+  const wrap = document.getElementById('skuWrap'+i);
+  if (wrap) {{
+    const opts = skus.map(s => '<option value="'+s+'">'+s+'</option>').join('');
+    wrap.innerHTML = '<label>SKU</label><select onchange="setBoxProp('+i+',\\'sku\\',this.value)"><option value="">-- Select --</option>'+opts+'</select>';
+  }}
+}}
+
+function selectBox(i) {{ selectedBox = i; redrawCanvas(); }}
+function delBox(i) {{ boxes.splice(i, 1); selectedBox = -1; redraw(true); }}
+function undo() {{ boxes.pop(); selectedBox = -1; redraw(true); }}
+function clearAll() {{ boxes = []; selectedBox = -1; redraw(true); }}
+
+function copyData() {{
+  const data = boxes.map((b,i) => ({{
+    box_id: i+1,
+    x: Math.round(b.x/S), y: Math.round(b.y/S),
+    w: Math.round(b.w/S), h: Math.round(b.h/S),
+    brand: b.brand || '', sku: b.sku || '',
+    pack_type: b.packType || '', condition: b.condition || '',
+    position: b.position || ''
+  }}));
+  const json = JSON.stringify(data, null, 2);
+  navigator.clipboard.writeText(json);
+  const el = document.getElementById('copyResult');
+  el.style.display = 'block';
+  el.textContent = 'Copied ' + data.length + ' annotations to clipboard! Paste into the text area below.';
+  setTimeout(() => el.style.display = 'none', 3000);
+}}
+
+canvas.addEventListener('mousedown', (e) => {{
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  // Check if clicking a handle (resize)
+  const hit = hitHandle(mx, my);
+  if (hit) {{
+    dragging = hit;
+    selectedBox = hit.boxIdx;
+    sx = mx; sy = my;
+    redrawCanvas();
+    return;
+  }}
+
+  // Check if clicking inside a box (select)
+  for (let i = boxes.length-1; i >= 0; i--) {{
+    const b = boxes[i];
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) {{
+      selectedBox = i;
+      redrawCanvas();
+      return;
+    }}
+  }}
+
+  // Start new box
+  drawing = true;
+  sx = mx; sy = my;
+  selectedBox = -1;
+}});
+
+canvas.addEventListener('mousemove', (e) => {{
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (dragging) {{
+    const b = boxes[dragging.boxIdx];
+    const h = dragging.handle;
+    if (h.includes('l')) {{ const dx = mx - sx; b.x += dx; b.w -= dx; }}
+    if (h.includes('r')) {{ b.w += mx - sx; }}
+    if (h.includes('t') && h !== 'tr' || h === 't') {{
+      if (h === 't' || h === 'tl') {{ const dy = my - sy; b.y += dy; b.h -= dy; }}
+    }}
+    if (h === 'tl') {{ const dy = my - sy; b.y += dy; b.h -= dy; }}
+    if (h === 'tr') {{ const dy = my - sy; b.y += dy; b.h -= dy; }}
+    if (h.includes('b') && h !== 'bl' || h === 'b') {{ b.h += my - sy; }}
+    if (h === 'bl') {{ b.h += my - sy; }}
+    sx = mx; sy = my;
+    redrawCanvas();
+    return;
+  }}
+
+  if (!drawing) {{
+    // Update cursor for handles
+    const hit = hitHandle(mx, my);
+    canvas.style.cursor = hit ? 'nwse-resize' : 'crosshair';
+    return;
+  }}
+
+  redrawCanvas();
+  ctx.strokeStyle = '#00FF00';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 5]);
+  ctx.strokeRect(sx, sy, mx-sx, my-sy);
+  ctx.setLineDash([]);
+}});
+
+canvas.addEventListener('mouseup', (e) => {{
+  if (dragging) {{ dragging = null; return; }}
+  if (!drawing) return;
+  drawing = false;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const w = Math.abs(mx-sx), h = Math.abs(my-sy);
+  if (w > 8 && h > 8) {{
+    boxes.push({{
+      x: Math.min(sx,mx), y: Math.min(sy,my), w, h,
+      brand:'', sku:'', packType:'', condition:'', position:''
+    }});
+    selectedBox = boxes.length - 1;
+  }}
+  redraw(true);
+}});
+</script>
+"""
+
+st.markdown("### Annotate Cigarette Packs")
+st.caption("Draw rectangles around cigarette packs/cartons. Click a box to select it and drag handles to resize. Fill in brand, SKU, and conditions in the right panel.")
+components.html(canvas_html, height=display_h + 80)
+
+# Text area to paste annotation data from the canvas
+st.markdown("---")
+st.markdown("### Save Annotations")
+st.caption("Click **Copy Annotation Data** on the canvas above, then paste it below and click Submit.")
+pasted_data = st.text_area("Paste annotation data here:", height=100, key=f"paste_{image_source_name}",
+                           placeholder='Click "Copy Annotation Data" button above, then paste here...')
+
+if pasted_data and pasted_data.strip().startswith("["):
+    try:
+        annotations = json.loads(pasted_data)
+        brands_found = [a["brand"] for a in annotations if a.get("brand")]
+        skus_found = [a["sku"] for a in annotations if a.get("sku")]
+
+        st.success(f"**{len(annotations)} boxes** with {len(set(brands_found))} brands: {', '.join(set(brands_found))}")
+
+        if st.button("Submit Annotations", type="primary", use_container_width=True):
+            serial = image_source_name.replace("serial_", "").split("_")[0]
+
+            # Save correction
+            save_correction({
+                "serial": serial,
+                "image_url": image_source_name,
+                "model_used": "human_annotation",
+                "ai_result": {"brands": [], "skus": []},
+                "corrected_result": {"brands": list(set(brands_found)), "skus": list(set(skus_found))},
+                "notes": json.dumps([{
+                    "brand": a.get("brand"), "sku": a.get("sku"),
+                    "pack_type": a.get("pack_type"), "condition": a.get("condition"),
+                    "position": a.get("position"), "bbox": [a["x"], a["y"], a["w"], a["h"]]
+                } for a in annotations]),
+            })
+
+            # Save COCO
+            coco = _load_coco()
+            image_id = _next_id(coco["images"])
+            coco["images"].append({"id": image_id, "file_name": image_source_name, "width": img_w, "height": img_h})
+
+            for a in annotations:
+                ann_id = _next_id(coco["annotations"])
+                coco["annotations"].append({
+                    "id": ann_id, "image_id": image_id, "category_id": 1,
+                    "bbox": [a["x"], a["y"], a["w"], a["h"]],
+                    "area": a["w"] * a["h"], "iscrowd": 0,
+                })
+
+            _save_coco(coco)
+
+            # Save image to training data
+            image.save(str(IMAGES_DIR / image_source_name), "JPEG", quality=95)
+
+            st.success(f"Saved {len(annotations)} annotations + image to training data!")
+            st.balloons()
+
+    except json.JSONDecodeError:
+        st.error("Invalid JSON. Click 'Copy Annotation Data' on the canvas and paste here.")
 else:
-    objects = []
-
-# Convert canvas objects to bounding boxes (in original image coordinates)
-drawn_boxes = []
-for i, obj in enumerate(objects):
-    if obj.get("type") == "rect":
-        # Scale back to original image coordinates
-        left = obj["left"] / scale
-        top = obj["top"] / scale
-        width = (obj["width"] * obj.get("scaleX", 1)) / scale
-        height = (obj["height"] * obj.get("scaleY", 1)) / scale
-        drawn_boxes.append({
-            "index": i,
-            "x": round(left),
-            "y": round(top),
-            "w": round(width),
-            "h": round(height),
-            "type": "rect",
-        })
-    elif obj.get("type") == "circle":
-        # Convert circle to bounding box
-        cx = obj["left"] / scale
-        cy = obj["top"] / scale
-        r = (obj["radius"] * obj.get("scaleX", 1)) / scale
-        drawn_boxes.append({
-            "index": i,
-            "x": round(cx - r),
-            "y": round(cy - r),
-            "w": round(2 * r),
-            "h": round(2 * r),
-            "type": "circle",
-        })
-
-if not drawn_boxes:
-    st.info("Draw rectangles or circles on the image above to mark missed cigarette boxes.")
-    st.stop()
-
-# ── Annotation Form ──────────────────────────────────────────────────────
-st.markdown("---")
-st.markdown(f"### Annotations ({len(drawn_boxes)} boxes drawn)")
-
-# Initialize session state for annotations
-if "box_annotations" not in st.session_state:
-    st.session_state.box_annotations = {}
-
-annotations_valid = True
-annotation_data = []
-
-for box in drawn_boxes:
-    box_key = f"box_{box['index']}"
-    x, y, w, h = box["x"], box["y"], box["w"], box["h"]
-
-    # Crop thumbnail from original image
-    crop_x1 = max(0, x)
-    crop_y1 = max(0, y)
-    crop_x2 = min(img_w, x + w)
-    crop_y2 = min(img_h, y + h)
-    thumbnail = image.crop((crop_x1, crop_y1, crop_x2, crop_y2))
-
-    st.markdown(
-        f'<div class="annotation-card">'
-        f'  <strong>Box #{box["index"] + 1}</strong> ({box["type"]}) &mdash; '
-        f'  Position: ({x}, {y}), Size: {w} x {h}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    col_thumb, col_brand, col_sku, col_remove = st.columns([1, 1.5, 2, 0.5])
-
-    with col_thumb:
-        st.image(thumbnail, caption=f"Box #{box['index'] + 1}", width=120)
-
-    with col_brand:
-        brand = st.selectbox(
-            "Mother Brand",
-            ["-- Select --"] + BRAND_LIST,
-            key=f"brand_{box_key}",
-        )
-
-    with col_sku:
-        if brand and brand != "-- Select --":
-            skus = BRANDS_AND_SKUS.get(brand, [])
-            sku = st.selectbox(
-                "SKU",
-                ["-- Select --"] + skus,
-                key=f"sku_{box_key}",
-            )
-        else:
-            sku = st.selectbox("SKU", ["-- Select brand first --"], key=f"sku_{box_key}", disabled=True)
-
-    with col_remove:
-        st.markdown("")  # spacer
-        # Note: removing objects from canvas requires redrawing; we skip this box on submit instead
-        skip = st.checkbox("Skip", key=f"skip_{box_key}", help="Skip this box (don't save)")
-
-    if skip:
-        continue
-
-    if brand == "-- Select --" or (brand != "-- Select --" and sku == "-- Select --"):
-        annotations_valid = False
-    else:
-        annotation_data.append({
-            "box": box,
-            "brand": brand,
-            "sku": sku,
-        })
-
-
-# ── Submit ────────────────────────────────────────────────────────────────
-st.markdown("---")
-
-n_ready = len(annotation_data)
-n_total = len(drawn_boxes)
-skipped = sum(1 for box in drawn_boxes if st.session_state.get(f"skip_box_{box['index']}", False))
-
-if n_ready == 0:
-    st.warning("Select a brand and SKU for each drawn box before submitting.")
-    st.stop()
-
-st.info(f"{n_ready} annotation(s) ready to save.")
-
-if st.button("Submit Annotations", type="primary", use_container_width=True, disabled=(n_ready == 0)):
-    # 1) Save the source image to training_data/images/
-    img_hash = hashlib.md5(image_source_name.encode()).hexdigest()[:10]
-    image_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{img_hash}.jpg"
-    image_save_path = IMAGES_DIR / image_filename
-    image.save(str(image_save_path), "JPEG", quality=95)
-
-    # 2) Update COCO annotations
-    coco = _load_coco()
-    image_id = _next_id(coco["images"])
-
-    coco["images"].append({
-        "id": image_id,
-        "file_name": image_filename,
-        "width": img_w,
-        "height": img_h,
-    })
-
-    # Ensure categories are up to date
-    coco["categories"] = [{"id": v, "name": k} for k, v in CATEGORY_MAP.items()]
-
-    saved_count = 0
-    for ann in annotation_data:
-        box = ann["box"]
-        brand = ann["brand"]
-        sku = ann["sku"]
-        x, y, w, h = box["x"], box["y"], box["w"], box["h"]
-
-        # COCO annotation
-        ann_id = _next_id(coco["annotations"])
-        coco["annotations"].append({
-            "id": ann_id,
-            "image_id": image_id,
-            "category_id": CATEGORY_MAP.get(brand, 0),
-            "bbox": [x, y, w, h],
-            "area": w * h,
-            "iscrowd": 0,
-            "brand": brand,
-            "sku": sku,
-        })
-
-        # 3) Save as correction for the self-improving pipeline
-        correction = {
-            "serial": f"annotate_{image_filename}",
-            "image_url": image_source_name,
-            "model_used": "human_annotation",
-            "ai_result": {"brands": [], "skus": []},
-            "corrected_result": {"brands": [brand], "skus": [sku]},
-            "notes": f"Manual annotation: bbox=({x},{y},{w},{h})",
-        }
-        try:
-            save_correction(correction)
-        except Exception as e:
-            st.warning(f"Could not save correction: {e}")
-
-        saved_count += 1
-
-    # Write updated COCO file
-    _save_coco(coco)
-
-    st.success(
-        f"Saved {saved_count} annotation(s) successfully! "
-        f"Image saved to `training_data/images/{image_filename}`. "
-        f"COCO annotations updated."
-    )
-    st.balloons()
-
-    # Refresh sidebar stats
-    st.rerun()
+    st.info("Draw boxes on the image above, fill in brand/SKU/conditions in the right panel, then click **Copy Annotation Data** and paste below.")
