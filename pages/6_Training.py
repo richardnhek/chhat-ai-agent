@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from brands import BRANDS_AND_SKUS
 from auth import check_auth
+from annotation_quality import check_annotation_quality, auto_fix_annotations
 
 load_dotenv()
 
@@ -226,8 +227,8 @@ def find_all_coco_files() -> list[Path]:
 # TABS
 # ══════════════════════════════════════════════════════════════════════════
 
-tab_overview, tab_health, tab_train, tab_models, tab_import_export, tab_reference = st.tabs([
-    "Overview", "Health Check", "Train", "Models", "Import / Export", "Reference"
+tab_overview, tab_health, tab_train, tab_models, tab_import_export, tab_reference, tab_quality = st.tabs([
+    "Overview", "Health Check", "Train", "Models", "Import / Export", "Reference", "Annotation Quality"
 ])
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -997,6 +998,127 @@ with tab_reference:
                             st.markdown(f"_Cannot display: {img_info['filename']}_")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# TAB 7: ANNOTATION QUALITY
+# ══════════════════════════════════════════════════════════════════════════
+
+with tab_quality:
+    st.markdown("### Annotation Quality Check")
+    st.caption("Validate COCO annotations for common issues before training.")
+
+    coco_path_str = str(REAL_COCO)
+
+    if st.button("Run Quality Check", type="primary", key="run_quality_check"):
+        with st.spinner("Checking annotation quality..."):
+            results = check_annotation_quality(coco_path_str)
+
+        if results.get("error"):
+            st.error(results["error"])
+        else:
+            # Summary metrics
+            qcols = st.columns(4)
+            qcols[0].metric("Total Annotations", results["total_annotations"])
+            qcols[1].metric("Total Images", results["total_images"])
+            qcols[2].metric("Categories", results["total_categories"])
+            qcols[3].metric("Issues Found", results["total_issues"])
+
+            st.session_state["quality_results"] = results
+
+    # Show results if available
+    if "quality_results" in st.session_state:
+        results = st.session_state["quality_results"]
+
+        if results["total_issues"] == 0:
+            st.success("No issues found. Annotations look clean.")
+        else:
+            st.warning(f"Found {results['total_issues']} issue(s) across annotations.")
+
+            # Issue summary
+            st.markdown("#### Issue Summary")
+            summary = results.get("summary", {})
+            if summary:
+                issue_labels = {
+                    "too_small": "Boxes too small (< 10x10)",
+                    "too_large": "Boxes too large (> 80% image)",
+                    "invalid_dimensions": "Zero/negative dimensions",
+                    "duplicate": "Duplicate boxes",
+                    "too_many_boxes": "Images with > 50 boxes",
+                    "no_annotations": "Images with no annotations",
+                    "out_of_bounds": "Boxes outside image bounds",
+                    "class_imbalance": "Class imbalance warnings",
+                    "missing_image": "Missing image references",
+                }
+                for issue_type, count in sorted(summary.items(), key=lambda x: -x[1]):
+                    label = issue_labels.get(issue_type, issue_type)
+                    severity = "red" if issue_type in ("invalid_dimensions", "missing_image") else "orange"
+                    css_class = "fail" if severity == "red" else "warn"
+                    st.markdown(
+                        f'<div class="health-item {css_class}">'
+                        f'<span class="health-text"><strong>{count}</strong> &mdash; {label}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            # Class distribution
+            class_dist = results.get("class_distribution", {})
+            if class_dist:
+                st.markdown("#### Class Distribution")
+                import pandas as _pd
+                dist_df = _pd.DataFrame(
+                    sorted(class_dist.items(), key=lambda x: -x[1]),
+                    columns=["Category", "Count"],
+                )
+                st.bar_chart(dist_df.set_index("Category"))
+
+            # Issue details (expandable)
+            issues = results.get("issues", [])
+            if issues:
+                with st.expander(f"All Issues ({len(issues)})", expanded=False):
+                    for issue in issues[:200]:
+                        img = issue.get("image") or "N/A"
+                        ann_id = issue.get("annotation_id") or "-"
+                        itype = issue.get("issue_type", "unknown")
+                        details = issue.get("details", "")
+                        st.markdown(f"- **[{itype}]** Image: `{img}`, Ann ID: {ann_id} — {details}")
+                    if len(issues) > 200:
+                        st.caption(f"Showing first 200 of {len(issues)} issues.")
+
+            # Auto-fix section
+            st.markdown("---")
+            st.markdown("#### Auto-Fix Annotations")
+            st.caption("Apply automatic fixes to common issues. A backup is recommended before running fixes.")
+
+            fix_options = st.multiselect(
+                "Select fixes to apply",
+                options=["remove_tiny", "clip_bounds", "remove_duplicates"],
+                default=["remove_tiny", "clip_bounds"],
+                format_func=lambda x: {
+                    "remove_tiny": "Remove tiny boxes (< 10x10)",
+                    "clip_bounds": "Clip boxes to image bounds",
+                    "remove_duplicates": "Remove duplicate boxes",
+                }.get(x, x),
+                key="auto_fix_options",
+            )
+
+            if st.button("Apply Fixes", type="secondary", key="apply_auto_fix"):
+                if not fix_options:
+                    st.warning("Select at least one fix option.")
+                else:
+                    with st.spinner("Applying fixes..."):
+                        fix_result = auto_fix_annotations(coco_path_str, fixes=fix_options)
+                    if fix_result.get("error"):
+                        st.error(fix_result["error"])
+                    else:
+                        st.success(
+                            f"Applied {fix_result['total_fixes']} fix(es). "
+                            f"{fix_result['annotations_remaining']} annotations remaining."
+                        )
+                        for fix_type, count in fix_result["fixes_applied"].items():
+                            st.markdown(f"- **{fix_type}**: {count} fix(es)")
+                        # Clear cached results so user re-runs check
+                        if "quality_results" in st.session_state:
+                            del st.session_state["quality_results"]
+
 # ── Sidebar summary ──────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -1009,6 +1131,7 @@ with st.sidebar:
     - **Models** — Manage saved model versions
     - **Import/Export** — Roboflow import, dataset export
     - **Reference** — Brand image gallery
+    - **Annotation Quality** — Validate & auto-fix annotations
     """)
 
     st.markdown("---")
